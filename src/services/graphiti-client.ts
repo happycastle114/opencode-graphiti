@@ -43,15 +43,72 @@ let requestId = 0;
 
 export class GraphitiClient {
   private baseUrl: string;
+  private sessionId: string | null = null;
+  private initPromise: Promise<void> | null = null;
 
   constructor() {
     this.baseUrl = GRAPHITI_MCP_URL || "http://localhost:8000/mcp/";
+  }
+
+  private async ensureSession(): Promise<void> {
+    if (this.sessionId) return;
+    if (this.initPromise) return this.initPromise;
+
+    this.initPromise = this.initializeSession();
+    await this.initPromise;
+  }
+
+  private async initializeSession(): Promise<void> {
+    const initRequest: MCPRequest = {
+      jsonrpc: "2.0",
+      id: ++requestId,
+      method: "initialize",
+      params: {
+        protocolVersion: "2024-11-05",
+        capabilities: {},
+        clientInfo: { name: "opencode-graphiti", version: "0.2.0" },
+      },
+    };
+
+    const initResponse = await withTimeout(
+      fetch(this.baseUrl, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Accept": "application/json, text/event-stream",
+        },
+        body: JSON.stringify(initRequest),
+      }),
+      TIMEOUT_MS
+    );
+
+    if (!initResponse.ok) {
+      const errorText = await initResponse.text();
+      throw new Error(`MCP init failed: HTTP ${initResponse.status}: ${errorText}`);
+    }
+
+    this.sessionId = initResponse.headers.get("mcp-session-id");
+    await initResponse.text();
+
+    await fetch(this.baseUrl, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Accept": "application/json, text/event-stream",
+        "Mcp-Session-Id": this.sessionId || "",
+      },
+      body: JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }),
+    });
+    
+    log("graphiti.session: initialized", { sessionId: this.sessionId?.slice(0, 8) });
   }
 
   private async callMCPTool<T>(
     toolName: string,
     args: Record<string, unknown>
   ): Promise<T> {
+    await this.ensureSession();
+
     const request: MCPRequest = {
       jsonrpc: "2.0",
       id: ++requestId,
@@ -62,12 +119,18 @@ export class GraphitiClient {
       } as MCPToolCallParams,
     };
 
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+      "Accept": "application/json, text/event-stream",
+    };
+    if (this.sessionId) {
+      headers["Mcp-Session-Id"] = this.sessionId;
+    }
+
     const response = await withTimeout(
       fetch(this.baseUrl, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
+        headers,
         body: JSON.stringify(request),
       }),
       TIMEOUT_MS
@@ -75,16 +138,64 @@ export class GraphitiClient {
 
     if (!response.ok) {
       const errorText = await response.text();
+      if (response.status === 400 && errorText.includes("session")) {
+        this.sessionId = null;
+        this.initPromise = null;
+        return this.callMCPTool(toolName, args);
+      }
       throw new Error(`HTTP ${response.status}: ${errorText}`);
     }
 
-    const result = (await response.json()) as MCPResponse<T>;
+    const contentType = response.headers.get("content-type") || "";
+    let result: MCPResponse<T>;
+
+    if (contentType.includes("text/event-stream")) {
+      const text = await response.text();
+      const parsed = this.parseSSE<T>(text);
+      if (!parsed) {
+        throw new Error("Failed to parse SSE response");
+      }
+      result = parsed;
+    } else {
+      result = (await response.json()) as MCPResponse<T>;
+    }
 
     if (result.error) {
       throw new Error(`MCP Error: ${result.error.message}`);
     }
 
-    return result.result as T;
+    return this.unwrapToolResult<T>(result.result);
+  }
+
+  private unwrapToolResult<T>(result: unknown): T {
+    if (result && typeof result === "object" && "content" in result) {
+      const content = (result as { content?: Array<{ type: string; text?: string }> }).content;
+      if (Array.isArray(content) && content.length > 0) {
+        const textContent = content.find((c) => c.type === "text" && c.text);
+        if (textContent?.text) {
+          try {
+            return JSON.parse(textContent.text) as T;
+          } catch {
+            return textContent.text as unknown as T;
+          }
+        }
+      }
+    }
+    return result as T;
+  }
+
+  private parseSSE<T>(text: string): MCPResponse<T> | null {
+    const lines = text.split("\n");
+    for (const line of lines) {
+      if (line.startsWith("data: ")) {
+        try {
+          return JSON.parse(line.slice(6)) as MCPResponse<T>;
+        } catch {
+          continue;
+        }
+      }
+    }
+    return null;
   }
 
   async addMemory(
