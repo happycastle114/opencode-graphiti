@@ -55,6 +55,9 @@ export interface GraphitiEpisodeResult {
   group_id: string;
 }
 
+// Graphiti Episode Source types
+export type EpisodeSource = "text" | "json" | "message";
+
 // Unified memory result for context injection
 export interface MemoryResult {
   id: string;
@@ -63,6 +66,13 @@ export interface MemoryResult {
   type?: "node" | "fact" | "episode";
   labels?: string[];
   metadata?: Record<string, unknown>;
+  // Temporal metadata (Graphiti-specific)
+  createdAt?: string;
+  validAt?: string;
+  invalidAt?: string;
+  // Relationship info for facts
+  sourceNode?: string;
+  targetNode?: string;
 }
 
 // Profile structure for user preferences

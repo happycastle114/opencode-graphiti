@@ -98,28 +98,15 @@ export const GraphitiPlugin: Plugin = async (ctx: PluginInput) => {
         if (isFirstMessage) {
           injectedSessions.add(input.sessionID);
 
-          // Fetch profile, user memories, and project memories in parallel
           const [profileResult, userMemoriesResult, projectMemoriesResult] = await Promise.all([
             graphitiClient.getProfile(tags.user, userMessage),
             graphitiClient.searchMemories(userMessage, tags.user),
-            graphitiClient.getEpisodes([tags.project], CONFIG.maxProjectMemories),
+            graphitiClient.searchMemories(userMessage, tags.project),
           ]);
 
           const profile = profileResult.success ? profileResult : null;
           const userMemories = userMemoriesResult.success ? userMemoriesResult : { results: [] };
-          
-          // Format project memories to match expected structure
-          const projectMemories = {
-            results: (projectMemoriesResult.episodes || []).map((ep: { uuid: string; content?: string; name: string; created_at?: string; source?: string }) => ({
-              id: ep.uuid,
-              memory: ep.content || ep.name,
-              similarity: 1,
-              title: ep.name,
-              metadata: { created_at: ep.created_at, source: ep.source },
-            })),
-            total: projectMemoriesResult.episodes?.length || 0,
-            timing: 0,
-          };
+          const projectMemories = projectMemoriesResult.success ? projectMemoriesResult : { results: [] };
 
           const memoryContext = formatContextForPrompt(
             profile,
@@ -155,10 +142,10 @@ export const GraphitiPlugin: Plugin = async (ctx: PluginInput) => {
     tool: {
       graphiti: tool({
         description:
-          "Manage and query the Graphiti knowledge graph memory system. Use 'search' to find relevant memories, 'add' to store new knowledge, 'profile' to view user profile, 'list' to see recent memories, 'forget' to remove a memory.",
+          "Manage Graphiti temporal knowledge graph. Features: entity extraction, fact relationships with validity tracking, multiple data formats (text/json/message). Use 'search' for semantic+graph search, 'add' to store (auto-detects JSON), 'graph' to explore entity relationships.",
         args: {
           mode: tool.schema
-            .enum(["add", "search", "profile", "list", "forget", "help", "status"])
+            .enum(["add", "search", "profile", "list", "forget", "graph", "help", "status"])
             .optional(),
           content: tool.schema.string().optional(),
           query: tool.schema.string().optional(),
@@ -175,6 +162,9 @@ export const GraphitiPlugin: Plugin = async (ctx: PluginInput) => {
           scope: tool.schema.enum(["user", "project"]).optional(),
           memoryId: tool.schema.string().optional(),
           limit: tool.schema.number().optional(),
+          source: tool.schema.enum(["text", "json", "message"]).optional(),
+          entityTypes: tool.schema.array(tool.schema.string()).optional(),
+          centerNodeId: tool.schema.string().optional(),
         },
         async execute(args: {
           mode?: string;
@@ -184,6 +174,9 @@ export const GraphitiPlugin: Plugin = async (ctx: PluginInput) => {
           scope?: MemoryScope;
           memoryId?: string;
           limit?: number;
+          source?: "text" | "json" | "message";
+          entityTypes?: string[];
+          centerNodeId?: string;
         }) {
           if (!isConfigured()) {
             return JSON.stringify({
@@ -200,32 +193,43 @@ export const GraphitiPlugin: Plugin = async (ctx: PluginInput) => {
               case "help": {
                 return JSON.stringify({
                   success: true,
-                  message: "Graphiti Memory Usage Guide",
+                  message: "Graphiti Temporal Knowledge Graph - Usage Guide",
+                  features: [
+                    "Temporal validity tracking (facts can be superseded)",
+                    "Entity extraction (Preference, Requirement, Procedure, etc.)",
+                    "Graph relationships between entities",
+                    "Multiple data formats (text, json, message)",
+                  ],
                   commands: [
                     {
                       command: "add",
-                      description: "Store a new memory",
-                      args: ["content", "type?", "scope?"],
+                      description: "Store memory (auto-detects JSON)",
+                      args: ["content", "type?", "scope?", "source?"],
                     },
                     {
                       command: "search",
-                      description: "Search memories",
-                      args: ["query", "scope?"],
+                      description: "Semantic + graph search",
+                      args: ["query", "scope?", "centerNodeId?"],
+                    },
+                    {
+                      command: "graph",
+                      description: "Explore entity relationships",
+                      args: ["centerNodeId", "query?", "scope?"],
                     },
                     {
                       command: "profile",
-                      description: "View user profile",
+                      description: "View user preferences",
                       args: ["query?"],
                     },
                     {
                       command: "list",
-                      description: "List recent memories",
+                      description: "List recent episodes",
                       args: ["scope?", "limit?"],
                     },
                     {
                       command: "forget",
                       description: "Remove a memory",
-                      args: ["memoryId", "scope?"],
+                      args: ["memoryId"],
                     },
                     {
                       command: "status",
@@ -233,18 +237,12 @@ export const GraphitiPlugin: Plugin = async (ctx: PluginInput) => {
                       args: [],
                     },
                   ],
-                  scopes: {
-                    user: "Cross-project preferences and knowledge",
-                    project: "Project-specific knowledge (default)",
+                  sources: {
+                    text: "Plain text (default)",
+                    json: "Structured data - entities auto-extracted",
+                    message: "Conversation format",
                   },
-                  types: [
-                    "project-config",
-                    "architecture",
-                    "error-solution",
-                    "preference",
-                    "learned-pattern",
-                    "conversation",
-                  ],
+                  entityTypes: CONFIG.entityTypes,
                 });
               }
 
@@ -276,7 +274,11 @@ export const GraphitiPlugin: Plugin = async (ctx: PluginInput) => {
                 const result = await graphitiClient.addMemory(
                   sanitizedContent,
                   groupId,
-                  { type: args.type, name: `${args.type || "memory"}-${Date.now()}` }
+                  { 
+                    type: args.type, 
+                    name: `${args.type || "memory"}-${Date.now()}`,
+                    source: args.source,
+                  }
                 );
 
                 if (!result.success) {
@@ -288,7 +290,7 @@ export const GraphitiPlugin: Plugin = async (ctx: PluginInput) => {
 
                 return JSON.stringify({
                   success: true,
-                  message: `Memory added to ${scope} scope`,
+                  message: `Memory added to ${scope} scope (source: ${args.source || "auto-detected"})`,
                   scope,
                   type: args.type,
                 });
@@ -302,12 +304,14 @@ export const GraphitiPlugin: Plugin = async (ctx: PluginInput) => {
                   });
                 }
 
+                const searchOptions = { centerNodeUuid: args.centerNodeId };
                 const scope = args.scope;
 
                 if (scope === "user") {
                   const result = await graphitiClient.searchMemories(
                     args.query,
-                    tags.user
+                    tags.user,
+                    searchOptions
                   );
                   if (!result.success) {
                     return JSON.stringify({
@@ -321,7 +325,8 @@ export const GraphitiPlugin: Plugin = async (ctx: PluginInput) => {
                 if (scope === "project") {
                   const result = await graphitiClient.searchMemories(
                     args.query,
-                    tags.project
+                    tags.project,
+                    searchOptions
                   );
                   if (!result.success) {
                     return JSON.stringify({
@@ -332,10 +337,9 @@ export const GraphitiPlugin: Plugin = async (ctx: PluginInput) => {
                   return formatSearchResults(args.query, scope, result, args.limit);
                 }
 
-                // Search both scopes
                 const [userResult, projectResult] = await Promise.all([
-                  graphitiClient.searchMemories(args.query, tags.user),
-                  graphitiClient.searchMemories(args.query, tags.project),
+                  graphitiClient.searchMemories(args.query, tags.user, searchOptions),
+                  graphitiClient.searchMemories(args.query, tags.project, searchOptions),
                 ]);
 
                 if (!userResult.success || !projectResult.success) {
@@ -366,7 +370,60 @@ export const GraphitiPlugin: Plugin = async (ctx: PluginInput) => {
                     similarity: Math.round(r.similarity * 100),
                     scope: r.scope,
                     type: r.type,
+                    labels: "labels" in r ? r.labels : undefined,
+                    createdAt: r.createdAt,
                   })),
+                });
+              }
+
+              case "graph": {
+                if (!args.centerNodeId) {
+                  return JSON.stringify({
+                    success: false,
+                    error: "centerNodeId is required for graph mode. First use 'search' to find a node ID.",
+                  });
+                }
+
+                const scope = args.scope || "project";
+                const groupId = scope === "user" ? tags.user : tags.project;
+                
+                const factsResult = await graphitiClient.searchFacts(
+                  args.query || "",
+                  [groupId],
+                  { 
+                    maxFacts: args.limit || 20,
+                    centerNodeUuid: args.centerNodeId,
+                  }
+                );
+
+                if (!factsResult.success) {
+                  return JSON.stringify({
+                    success: false,
+                    error: factsResult.error || "Failed to explore graph",
+                  });
+                }
+
+                const validFacts = (factsResult.facts || []).filter((f) => !f.invalid_at);
+                const invalidFacts = (factsResult.facts || []).filter((f) => f.invalid_at);
+
+                return JSON.stringify({
+                  success: true,
+                  centerNodeId: args.centerNodeId,
+                  relationships: {
+                    valid: validFacts.map((f) => ({
+                      id: f.uuid,
+                      fact: f.fact || f.name,
+                      sourceNode: f.source_node_uuid,
+                      targetNode: f.target_node_uuid,
+                      validAt: f.valid_at,
+                    })),
+                    superseded: invalidFacts.map((f) => ({
+                      id: f.uuid,
+                      fact: f.fact || f.name,
+                      invalidAt: f.invalid_at,
+                    })),
+                  },
+                  summary: `Found ${validFacts.length} valid and ${invalidFacts.length} superseded facts`,
                 });
               }
 
