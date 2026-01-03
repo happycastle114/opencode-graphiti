@@ -1,14 +1,12 @@
-import type { ProfileResponse } from "supermemory/resources";
 import { CONFIG } from "../config.js";
+import type { UserProfile, MemoryResult } from "../types/index.js";
 
-interface MemoryResultMinimal {
-  similarity: number;
-  memory?: string;
-  chunk?: string;
+interface ProfileResponse {
+  profile?: UserProfile;
 }
 
 interface MemoriesResponseMinimal {
-  results?: MemoryResultMinimal[];
+  results?: MemoryResult[];
 }
 
 export function formatContextForPrompt(
@@ -16,7 +14,7 @@ export function formatContextForPrompt(
   userMemories: MemoriesResponseMinimal,
   projectMemories: MemoriesResponseMinimal
 ): string {
-  const parts: string[] = ["[SUPERMEMORY]"];
+  const parts: string[] = ["[GRAPHITI MEMORY]"];
 
   if (CONFIG.injectProfile && profile?.profile) {
     const { static: staticFacts, dynamic: dynamicFacts } = profile.profile;
@@ -37,22 +35,24 @@ export function formatContextForPrompt(
   }
 
   const projectResults = projectMemories.results || [];
-  if (projectResults.length > 0) {
+  if (CONFIG.injectProjectMemories && projectResults.length > 0) {
     parts.push("\nProject Knowledge:");
     projectResults.forEach((mem) => {
       const similarity = Math.round(mem.similarity * 100);
-      const content = mem.memory || mem.chunk || "";
-      parts.push(`- [${similarity}%] ${content}`);
+      const content = mem.memory || "";
+      const typeTag = mem.type ? `[${mem.type}]` : "";
+      parts.push(`- ${typeTag}[${similarity}%] ${content}`);
     });
   }
 
   const userResults = userMemories.results || [];
-  if (userResults.length > 0) {
+  if (CONFIG.injectRelevantMemories && userResults.length > 0) {
     parts.push("\nRelevant Memories:");
     userResults.forEach((mem) => {
       const similarity = Math.round(mem.similarity * 100);
-      const content = mem.memory || mem.chunk || "";
-      parts.push(`- [${similarity}%] ${content}`);
+      const content = mem.memory || "";
+      const typeTag = mem.type ? `[${mem.type}]` : "";
+      parts.push(`- ${typeTag}[${similarity}%] ${content}`);
     });
   }
 

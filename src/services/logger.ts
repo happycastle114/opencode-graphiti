@@ -2,7 +2,7 @@ import { appendFileSync, writeFileSync } from "fs";
 import { homedir } from "os";
 import { join } from "path";
 
-const LOG_FILE = join(homedir(), ".opencode-supermemory.log");
+const LOG_FILE = join(homedir(), ".opencode-graphiti.log");
 
 writeFileSync(LOG_FILE, `\n--- Session started: ${new Date().toISOString()} ---\n`, { flag: "a" });
 

@@ -5,40 +5,55 @@ import { stripJsoncComments } from "./services/jsonc.js";
 
 const CONFIG_DIR = join(homedir(), ".config", "opencode");
 const CONFIG_FILES = [
+  join(CONFIG_DIR, "graphiti.jsonc"),
+  join(CONFIG_DIR, "graphiti.json"),
+  // Fallback to supermemory config for backwards compatibility
   join(CONFIG_DIR, "supermemory.jsonc"),
   join(CONFIG_DIR, "supermemory.json"),
 ];
 
-interface SupermemoryConfig {
-  apiKey?: string;
+interface GraphitiConfig {
+  // Graphiti MCP Server URL
+  mcpUrl?: string;
+  // Default group ID for user scope (derived from git email if not set)
+  userGroupId?: string;
+  // Group ID prefix for project scopes
+  groupIdPrefix?: string;
+  // Search configuration
   similarityThreshold?: number;
   maxMemories?: number;
   maxProjectMemories?: number;
   maxProfileItems?: number;
+  // Feature flags
   injectProfile?: boolean;
-  containerTagPrefix?: string;
-  filterPrompt?: string;
+  injectProjectMemories?: boolean;
+  injectRelevantMemories?: boolean;
+  // Entity types to search for
+  entityTypes?: string[];
 }
 
-const DEFAULTS: Required<Omit<SupermemoryConfig, "apiKey">> = {
+const DEFAULTS: Required<Omit<GraphitiConfig, "userGroupId">> = {
+  mcpUrl: "http://localhost:8000/mcp/",
+  groupIdPrefix: "opencode",
   similarityThreshold: 0.6,
   maxMemories: 5,
   maxProjectMemories: 10,
   maxProfileItems: 5,
   injectProfile: true,
-  containerTagPrefix: "opencode",
-  filterPrompt: "You are a stateful coding agent. Remember all the information, including but not limited to user's coding preferences, tech stack, behaviours, workflows, and any other relevant details.",
+  injectProjectMemories: true,
+  injectRelevantMemories: true,
+  entityTypes: ["Preference", "Requirement", "Procedure", "Topic"],
 };
 
-function loadConfig(): SupermemoryConfig {
+function loadConfig(): GraphitiConfig {
   for (const path of CONFIG_FILES) {
     if (existsSync(path)) {
       try {
         const content = readFileSync(path, "utf-8");
         const json = stripJsoncComments(content);
-        return JSON.parse(json) as SupermemoryConfig;
+        return JSON.parse(json) as GraphitiConfig;
       } catch {
-        // Invalid config, use defaults
+        // Invalid config, continue to next file
       }
     }
   }
@@ -47,18 +62,56 @@ function loadConfig(): SupermemoryConfig {
 
 const fileConfig = loadConfig();
 
-export const SUPERMEMORY_API_KEY = fileConfig.apiKey ?? process.env.SUPERMEMORY_API_KEY;
+// Graphiti MCP Server URL from config or environment
+export const GRAPHITI_MCP_URL = 
+  fileConfig.mcpUrl ?? 
+  process.env.GRAPHITI_MCP_URL ?? 
+  DEFAULTS.mcpUrl;
+
+// Group ID prefix for scoping
+export const GROUP_ID_PREFIX = 
+  fileConfig.groupIdPrefix ?? 
+  process.env.GRAPHITI_GROUP_ID_PREFIX ?? 
+  DEFAULTS.groupIdPrefix;
 
 export const CONFIG = {
+  mcpUrl: GRAPHITI_MCP_URL,
+  groupIdPrefix: GROUP_ID_PREFIX,
   similarityThreshold: fileConfig.similarityThreshold ?? DEFAULTS.similarityThreshold,
   maxMemories: fileConfig.maxMemories ?? DEFAULTS.maxMemories,
   maxProjectMemories: fileConfig.maxProjectMemories ?? DEFAULTS.maxProjectMemories,
   maxProfileItems: fileConfig.maxProfileItems ?? DEFAULTS.maxProfileItems,
   injectProfile: fileConfig.injectProfile ?? DEFAULTS.injectProfile,
-  containerTagPrefix: fileConfig.containerTagPrefix ?? DEFAULTS.containerTagPrefix,
-  filterPrompt: fileConfig.filterPrompt ?? DEFAULTS.filterPrompt,
+  injectProjectMemories: fileConfig.injectProjectMemories ?? DEFAULTS.injectProjectMemories,
+  injectRelevantMemories: fileConfig.injectRelevantMemories ?? DEFAULTS.injectRelevantMemories,
+  entityTypes: fileConfig.entityTypes ?? DEFAULTS.entityTypes,
 };
 
+/**
+ * Check if Graphiti MCP server is configured and reachable
+ * Returns true if GRAPHITI_MCP_URL is set (we'll verify connectivity at runtime)
+ */
 export function isConfigured(): boolean {
-  return !!SUPERMEMORY_API_KEY;
+  return !!GRAPHITI_MCP_URL;
+}
+
+/**
+ * Verify Graphiti MCP server is actually reachable
+ */
+export async function verifyConnection(): Promise<boolean> {
+  try {
+    const response = await fetch(GRAPHITI_MCP_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/call",
+        params: { name: "get_status", arguments: {} },
+      }),
+    });
+    return response.ok;
+  } catch {
+    return false;
+  }
 }

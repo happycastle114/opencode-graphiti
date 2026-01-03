@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
-import { supermemoryClient } from "./client.js";
+import { graphitiClient } from "./graphiti-client.js";
 import { log } from "./logger.js";
 import { CONFIG } from "../config.js";
 
@@ -59,7 +59,7 @@ export interface CompactionOptions {
 function createCompactionPrompt(projectMemories: string[]): string {
   const memoriesSection = projectMemories.length > 0 
     ? `
-## Project Knowledge (from Supermemory)
+## Project Knowledge (from Graphiti)
 The following project-specific knowledge should be preserved and referenced in the summary:
 ${projectMemories.map(m => `- ${m}`).join('\n')}
 `
@@ -267,9 +267,9 @@ export function createCompactionHook(
 
   async function fetchProjectMemoriesForCompaction(): Promise<string[]> {
     try {
-      const result = await supermemoryClient.listMemories(tags.project, CONFIG.maxProjectMemories);
+      const result = await graphitiClient.listMemories(tags.project, CONFIG.maxProjectMemories);
       const memories = result.memories || [];
-      return memories.map((m: any) => m.summary || m.content || "").filter(Boolean);
+      return memories.map((m: { summary?: string }) => m.summary || "").filter(Boolean);
     } catch (err) {
       log("[compaction] failed to fetch project memories", { error: String(err) });
       return [];
@@ -303,14 +303,14 @@ export function createCompactionHook(
     }
 
     try {
-      const result = await supermemoryClient.addMemory(
+      const result = await graphitiClient.addMemory(
         `[Session Summary]\n${summaryContent}`,
         tags.project,
-        { type: "conversation" }
+        { type: "conversation", name: `session-summary-${sessionID}` }
       );
 
       if (result.success) {
-        log("[compaction] summary saved as memory", { sessionID, memoryId: result.id });
+        log("[compaction] summary saved as memory", { sessionID });
       } else {
         log("[compaction] failed to save summary", { error: result.error });
       }
@@ -378,7 +378,7 @@ export function createCompactionHook(
     await ctx.client.tui.showToast({
       body: {
         title: "Preemptive Compaction",
-        message: `Context at ${(usageRatio * 100).toFixed(0)}% - compacting with Supermemory context...`,
+        message: `Context at ${(usageRatio * 100).toFixed(0)}% - compacting with Graphiti context...`,
         variant: "warning",
         duration: 3000,
       },
@@ -407,7 +407,7 @@ export function createCompactionHook(
       await ctx.client.tui.showToast({
         body: {
           title: "Compaction Complete",
-          message: "Session compacted with Supermemory context. Resuming...",
+          message: "Session compacted with Graphiti context. Resuming...",
           variant: "success",
           duration: 2000,
         },

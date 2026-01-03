@@ -2,7 +2,7 @@ import type { Plugin, PluginInput } from "@opencode-ai/plugin";
 import type { Part } from "@opencode-ai/sdk";
 import { tool } from "@opencode-ai/plugin";
 
-import { supermemoryClient } from "./services/client.js";
+import { graphitiClient } from "./services/graphiti-client.js";
 import { formatContextForPrompt } from "./services/context.js";
 import { getTags } from "./services/tags.js";
 import { stripPrivateContent, isFullyPrivate } from "./services/privacy.js";
@@ -19,7 +19,7 @@ const MEMORY_KEYWORD_PATTERN =
   /\b(remember|memorize|save\s+this|note\s+this|keep\s+in\s+mind|don'?t\s+forget|learn\s+this|store\s+this|record\s+this|make\s+a\s+note|take\s+note|jot\s+down|commit\s+to\s+memory|remember\s+that|never\s+forget|always\s+remember)\b/i;
 
 const MEMORY_NUDGE_MESSAGE = `[MEMORY TRIGGER DETECTED]
-The user wants you to remember something. You MUST use the \`supermemory\` tool with \`mode: "add"\` to save this information.
+The user wants you to remember something. You MUST use the \`graphiti\` tool with \`mode: "add"\` to save this information.
 
 Extract the key information the user wants remembered and save it as a concise, searchable memory.
 - Use \`scope: "project"\` for project-specific preferences (e.g., "run lint with tests")
@@ -37,14 +37,14 @@ function detectMemoryKeyword(text: string): boolean {
   return MEMORY_KEYWORD_PATTERN.test(textWithoutCode);
 }
 
-export const SupermemoryPlugin: Plugin = async (ctx: PluginInput) => {
+export const GraphitiPlugin: Plugin = async (ctx: PluginInput) => {
   const { directory } = ctx;
   const tags = getTags(directory);
   const injectedSessions = new Set<string>();
   log("Plugin init", { directory, tags, configured: isConfigured() });
 
   if (!isConfigured()) {
-    log("Plugin disabled - SUPERMEMORY_API_KEY not set");
+    log("Plugin disabled - GRAPHITI_MCP_URL not set or server not reachable");
   }
 
   const compactionHook = isConfigured() && ctx.client
@@ -83,7 +83,7 @@ export const SupermemoryPlugin: Plugin = async (ctx: PluginInput) => {
         if (detectMemoryKeyword(userMessage)) {
           log("chat.message: memory keyword detected");
           const nudgePart: Part = {
-            id: `supermemory-nudge-${Date.now()}`,
+            id: `graphiti-nudge-${Date.now()}`,
             sessionID: input.sessionID,
             messageID: output.message.id,
             type: "text",
@@ -98,25 +98,26 @@ export const SupermemoryPlugin: Plugin = async (ctx: PluginInput) => {
         if (isFirstMessage) {
           injectedSessions.add(input.sessionID);
 
-          const [profileResult, userMemoriesResult, projectMemoriesListResult] = await Promise.all([
-            supermemoryClient.getProfile(tags.user, userMessage),
-            supermemoryClient.searchMemories(userMessage, tags.user),
-            supermemoryClient.listMemories(tags.project, CONFIG.maxProjectMemories),
+          // Fetch profile, user memories, and project memories in parallel
+          const [profileResult, userMemoriesResult, projectMemoriesResult] = await Promise.all([
+            graphitiClient.getProfile(tags.user, userMessage),
+            graphitiClient.searchMemories(userMessage, tags.user),
+            graphitiClient.getEpisodes([tags.project], CONFIG.maxProjectMemories),
           ]);
 
           const profile = profileResult.success ? profileResult : null;
           const userMemories = userMemoriesResult.success ? userMemoriesResult : { results: [] };
-          const projectMemoriesList = projectMemoriesListResult.success ? projectMemoriesListResult : { memories: [] };
-
+          
+          // Format project memories to match expected structure
           const projectMemories = {
-            results: (projectMemoriesList.memories || []).map((m: any) => ({
-              id: m.id,
-              memory: m.summary,
+            results: (projectMemoriesResult.episodes || []).map((ep: { uuid: string; content?: string; name: string; created_at?: string; source?: string }) => ({
+              id: ep.uuid,
+              memory: ep.content || ep.name,
               similarity: 1,
-              title: m.title,
-              metadata: m.metadata,
+              title: ep.name,
+              metadata: { created_at: ep.created_at, source: ep.source },
             })),
-            total: projectMemoriesList.memories?.length || 0,
+            total: projectMemoriesResult.episodes?.length || 0,
             timing: 0,
           };
 
@@ -128,7 +129,7 @@ export const SupermemoryPlugin: Plugin = async (ctx: PluginInput) => {
 
           if (memoryContext) {
             const contextPart: Part = {
-              id: `supermemory-context-${Date.now()}`,
+              id: `graphiti-context-${Date.now()}`,
               sessionID: input.sessionID,
               messageID: output.message.id,
               type: "text",
@@ -152,12 +153,12 @@ export const SupermemoryPlugin: Plugin = async (ctx: PluginInput) => {
     },
 
     tool: {
-      supermemory: tool({
+      graphiti: tool({
         description:
-          "Manage and query the Supermemory persistent memory system. Use 'search' to find relevant memories, 'add' to store new knowledge, 'profile' to view user profile, 'list' to see recent memories, 'forget' to remove a memory.",
+          "Manage and query the Graphiti knowledge graph memory system. Use 'search' to find relevant memories, 'add' to store new knowledge, 'profile' to view user profile, 'list' to see recent memories, 'forget' to remove a memory.",
         args: {
           mode: tool.schema
-            .enum(["add", "search", "profile", "list", "forget", "help"])
+            .enum(["add", "search", "profile", "list", "forget", "help", "status"])
             .optional(),
           content: tool.schema.string().optional(),
           query: tool.schema.string().optional(),
@@ -188,7 +189,7 @@ export const SupermemoryPlugin: Plugin = async (ctx: PluginInput) => {
             return JSON.stringify({
               success: false,
               error:
-                "SUPERMEMORY_API_KEY not set. Set it in your environment to use Supermemory.",
+                "GRAPHITI_MCP_URL not set. Set it in your environment or run docker compose up in graphiti/mcp_server.",
             });
           }
 
@@ -199,7 +200,7 @@ export const SupermemoryPlugin: Plugin = async (ctx: PluginInput) => {
               case "help": {
                 return JSON.stringify({
                   success: true,
-                  message: "Supermemory Usage Guide",
+                  message: "Graphiti Memory Usage Guide",
                   commands: [
                     {
                       command: "add",
@@ -226,6 +227,11 @@ export const SupermemoryPlugin: Plugin = async (ctx: PluginInput) => {
                       description: "Remove a memory",
                       args: ["memoryId", "scope?"],
                     },
+                    {
+                      command: "status",
+                      description: "Check Graphiti server status",
+                      args: [],
+                    },
                   ],
                   scopes: {
                     user: "Cross-project preferences and knowledge",
@@ -240,6 +246,11 @@ export const SupermemoryPlugin: Plugin = async (ctx: PluginInput) => {
                     "conversation",
                   ],
                 });
+              }
+
+              case "status": {
+                const result = await graphitiClient.getStatus();
+                return JSON.stringify(result);
               }
 
               case "add": {
@@ -259,13 +270,13 @@ export const SupermemoryPlugin: Plugin = async (ctx: PluginInput) => {
                 }
 
                 const scope = args.scope || "project";
-                const containerTag =
+                const groupId =
                   scope === "user" ? tags.user : tags.project;
 
-                const result = await supermemoryClient.addMemory(
+                const result = await graphitiClient.addMemory(
                   sanitizedContent,
-                  containerTag,
-                  { type: args.type }
+                  groupId,
+                  { type: args.type, name: `${args.type || "memory"}-${Date.now()}` }
                 );
 
                 if (!result.success) {
@@ -278,7 +289,6 @@ export const SupermemoryPlugin: Plugin = async (ctx: PluginInput) => {
                 return JSON.stringify({
                   success: true,
                   message: `Memory added to ${scope} scope`,
-                  id: result.id,
                   scope,
                   type: args.type,
                 });
@@ -295,7 +305,7 @@ export const SupermemoryPlugin: Plugin = async (ctx: PluginInput) => {
                 const scope = args.scope;
 
                 if (scope === "user") {
-                  const result = await supermemoryClient.searchMemories(
+                  const result = await graphitiClient.searchMemories(
                     args.query,
                     tags.user
                   );
@@ -309,7 +319,7 @@ export const SupermemoryPlugin: Plugin = async (ctx: PluginInput) => {
                 }
 
                 if (scope === "project") {
-                  const result = await supermemoryClient.searchMemories(
+                  const result = await graphitiClient.searchMemories(
                     args.query,
                     tags.project
                   );
@@ -322,9 +332,10 @@ export const SupermemoryPlugin: Plugin = async (ctx: PluginInput) => {
                   return formatSearchResults(args.query, scope, result, args.limit);
                 }
 
+                // Search both scopes
                 const [userResult, projectResult] = await Promise.all([
-                  supermemoryClient.searchMemories(args.query, tags.user),
-                  supermemoryClient.searchMemories(args.query, tags.project),
+                  graphitiClient.searchMemories(args.query, tags.user),
+                  graphitiClient.searchMemories(args.query, tags.project),
                 ]);
 
                 if (!userResult.success || !projectResult.success) {
@@ -351,15 +362,16 @@ export const SupermemoryPlugin: Plugin = async (ctx: PluginInput) => {
                   count: combined.length,
                   results: combined.slice(0, args.limit || 10).map((r) => ({
                     id: r.id,
-                    content: r.memory || r.chunk,
+                    content: r.memory,
                     similarity: Math.round(r.similarity * 100),
                     scope: r.scope,
+                    type: r.type,
                   })),
                 });
               }
 
               case "profile": {
-                const result = await supermemoryClient.getProfile(
+                const result = await graphitiClient.getProfile(
                   tags.user,
                   args.query
                 );
@@ -383,11 +395,11 @@ export const SupermemoryPlugin: Plugin = async (ctx: PluginInput) => {
               case "list": {
                 const scope = args.scope || "project";
                 const limit = args.limit || 20;
-                const containerTag =
+                const groupId =
                   scope === "user" ? tags.user : tags.project;
 
-                const result = await supermemoryClient.listMemories(
-                  containerTag,
+                const result = await graphitiClient.listMemories(
+                  groupId,
                   limit
                 );
 
@@ -422,7 +434,7 @@ export const SupermemoryPlugin: Plugin = async (ctx: PluginInput) => {
 
                 const scope = args.scope || "project";
 
-                const result = await supermemoryClient.deleteMemory(
+                const result = await graphitiClient.deleteMemory(
                   args.memoryId
                 );
 
@@ -463,10 +475,18 @@ export const SupermemoryPlugin: Plugin = async (ctx: PluginInput) => {
   };
 };
 
+export const SupermemoryPlugin = GraphitiPlugin;
+
+export { graphitiClient, GraphitiClient } from "./services/graphiti-client.js";
+
+export type { MemoryScope, MemoryType, GraphitiNodeResult, GraphitiFactResult, GraphitiEpisodeResult, MemoryResult, UserProfile } from "./types/index.js";
+
+export { isConfigured, CONFIG, GRAPHITI_MCP_URL } from "./config.js";
+
 function formatSearchResults(
   query: string,
   scope: string | undefined,
-  results: { results?: Array<{ id: string; memory?: string; chunk?: string; similarity: number }> },
+  results: { results?: Array<{ id: string; memory?: string; similarity: number; type?: string }> },
   limit?: number
 ): string {
   const memoryResults = results.results || [];
@@ -477,8 +497,9 @@ function formatSearchResults(
     count: memoryResults.length,
     results: memoryResults.slice(0, limit || 10).map((r) => ({
       id: r.id,
-      content: r.memory || r.chunk,
+      content: r.memory,
       similarity: Math.round(r.similarity * 100),
+      type: r.type,
     })),
   });
 }
