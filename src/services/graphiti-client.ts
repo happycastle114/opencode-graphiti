@@ -2,6 +2,7 @@ import { CONFIG, GRAPHITI_MCP_URL, isConfigured } from "../config.js";
 import { log } from "./logger.js";
 import type {
   MemoryType,
+  EpisodeSource,
   GraphitiNodeResult,
   GraphitiFactResult,
   GraphitiEpisodeResult,
@@ -89,31 +90,53 @@ export class GraphitiClient {
   async addMemory(
     content: string,
     groupId: string,
-    metadata?: { type?: MemoryType; name?: string; uuid?: string; [key: string]: unknown }
+    metadata?: { 
+      type?: MemoryType; 
+      name?: string; 
+      uuid?: string; 
+      source?: EpisodeSource;
+      [key: string]: unknown 
+    }
   ) {
     log("graphiti.addMemory: start", { groupId, contentLength: content.length });
     try {
+      const source = metadata?.source || this.inferSource(content);
       const args: Record<string, unknown> = {
         name: metadata?.name || `Memory ${Date.now()}`,
         episode_body: content,
         group_id: groupId,
-        source: "text",
+        source,
         source_description: metadata?.type || "opencode-memory",
       };
       
-      // Add optional uuid if provided
       if (metadata?.uuid) {
         args.uuid = metadata.uuid;
       }
       
       const result = await this.callMCPTool<{ message: string }>("add_memory", args);
-      log("graphiti.addMemory: success", { message: result.message });
+      log("graphiti.addMemory: success", { message: result.message, source });
       return { success: true as const, message: result.message };
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
       log("graphiti.addMemory: error", { error: errorMessage });
       return { success: false as const, error: errorMessage };
     }
+  }
+
+  private inferSource(content: string): EpisodeSource {
+    const trimmed = content.trim();
+    if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
+      try {
+        JSON.parse(trimmed);
+        return "json";
+      } catch {
+        return "text";
+      }
+    }
+    if (trimmed.includes('"role":') && (trimmed.includes('"user"') || trimmed.includes('"assistant"'))) {
+      return "message";
+    }
+    return "text";
   }
 
   async searchNodes(
@@ -273,37 +296,47 @@ export class GraphitiClient {
     }
   }
 
-  async searchMemories(query: string, groupId: string) {
+  async searchMemories(query: string, groupId: string, options?: { centerNodeUuid?: string }) {
     log("graphiti.searchMemories: start", { groupId });
     try {
       const [nodesResult, factsResult] = await Promise.all([
         this.searchNodes(query, [groupId], { 
           maxNodes: CONFIG.maxMemories,
-          entityTypes: ["Preference", "Requirement", "Procedure"]
+          entityTypes: CONFIG.entityTypes as string[],
         }),
-        this.searchFacts(query, [groupId], { maxFacts: CONFIG.maxMemories }),
+        this.searchFacts(query, [groupId], { 
+          maxFacts: CONFIG.maxMemories,
+          centerNodeUuid: options?.centerNodeUuid,
+        }),
       ]);
 
-      // Combine results into a unified format compatible with existing context injection
+      const validFacts = (factsResult.facts || []).filter((fact) => !fact.invalid_at);
+
       const results = [
         ...(nodesResult.nodes || []).map((node) => ({
           id: node.uuid,
           memory: node.summary || node.name,
-          similarity: 0.9, // Graphiti doesn't return similarity scores directly
+          similarity: 0.9,
           type: "node" as const,
           labels: node.labels,
+          createdAt: node.created_at,
         })),
-        ...(factsResult.facts || []).map((fact) => ({
+        ...validFacts.map((fact) => ({
           id: fact.uuid || `fact-${Date.now()}`,
-          memory: fact.fact || fact.name,
+          memory: this.formatFactWithRelationship(fact),
           similarity: 0.85,
           type: "fact" as const,
+          createdAt: fact.created_at,
+          validAt: fact.valid_at,
+          sourceNode: fact.source_node_uuid,
+          targetNode: fact.target_node_uuid,
         })),
       ];
 
       log("graphiti.searchMemories: success", { 
         nodesCount: nodesResult.nodes?.length || 0,
-        factsCount: factsResult.facts?.length || 0,
+        factsCount: validFacts.length,
+        filteredInvalid: (factsResult.facts?.length || 0) - validFacts.length,
       });
 
       return {
@@ -317,6 +350,14 @@ export class GraphitiClient {
       log("graphiti.searchMemories: error", { error: errorMessage });
       return { success: false as const, error: errorMessage, results: [], total: 0, timing: 0 };
     }
+  }
+
+  private formatFactWithRelationship(fact: GraphitiFactResult): string {
+    const content = fact.fact || fact.name || "";
+    if (fact.source_node_uuid && fact.target_node_uuid) {
+      return content;
+    }
+    return content;
   }
 
   async getProfile(userGroupId: string, query?: string) {
