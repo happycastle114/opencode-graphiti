@@ -28,7 +28,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/opencode-ai/opencode-graphiti"
+    "url": "https://github.com/happycastle114/opencode-graphiti"
   },
   "dependencies": {
     "@opencode-ai/plugin": "^1.0.162"
