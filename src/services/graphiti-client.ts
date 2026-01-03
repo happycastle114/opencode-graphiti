@@ -86,23 +86,27 @@ export class GraphitiClient {
     return result.result as T;
   }
 
-  /**
-   * Add an episode/memory to the knowledge graph
-   */
   async addMemory(
     content: string,
     groupId: string,
-    metadata?: { type?: MemoryType; name?: string; [key: string]: unknown }
+    metadata?: { type?: MemoryType; name?: string; uuid?: string; [key: string]: unknown }
   ) {
     log("graphiti.addMemory: start", { groupId, contentLength: content.length });
     try {
-      const result = await this.callMCPTool<{ message: string }>("add_memory", {
+      const args: Record<string, unknown> = {
         name: metadata?.name || `Memory ${Date.now()}`,
         episode_body: content,
         group_id: groupId,
         source: "text",
         source_description: metadata?.type || "opencode-memory",
-      });
+      };
+      
+      // Add optional uuid if provided
+      if (metadata?.uuid) {
+        args.uuid = metadata.uuid;
+      }
+      
+      const result = await this.callMCPTool<{ message: string }>("add_memory", args);
       log("graphiti.addMemory: success", { message: result.message });
       return { success: true as const, message: result.message };
     } catch (error) {
@@ -112,9 +116,6 @@ export class GraphitiClient {
     }
   }
 
-  /**
-   * Search for nodes (entities) in the knowledge graph
-   */
   async searchNodes(
     query: string,
     groupIds: string[],
@@ -144,9 +145,6 @@ export class GraphitiClient {
     }
   }
 
-  /**
-   * Search for facts (relationships) in the knowledge graph
-   */
   async searchFacts(
     query: string,
     groupIds: string[],
@@ -176,9 +174,6 @@ export class GraphitiClient {
     }
   }
 
-  /**
-   * Get recent episodes for a group
-   */
   async getEpisodes(groupIds: string[], maxEpisodes?: number) {
     log("graphiti.getEpisodes: start", { groupIds, maxEpisodes });
     try {
@@ -202,9 +197,6 @@ export class GraphitiClient {
     }
   }
 
-  /**
-   * Delete an episode by UUID
-   */
   async deleteEpisode(uuid: string) {
     log("graphiti.deleteEpisode: start", { uuid });
     try {
@@ -220,9 +212,6 @@ export class GraphitiClient {
     }
   }
 
-  /**
-   * Delete an entity edge by UUID
-   */
   async deleteEntityEdge(uuid: string) {
     log("graphiti.deleteEntityEdge: start", { uuid });
     try {
@@ -238,9 +227,36 @@ export class GraphitiClient {
     }
   }
 
-  /**
-   * Get server status
-   */
+  async getEntityEdge(uuid: string) {
+    log("graphiti.getEntityEdge: start", { uuid });
+    try {
+      const result = await this.callMCPTool<GraphitiFactResult>("get_entity_edge", {
+        uuid,
+      });
+      log("graphiti.getEntityEdge: success", { uuid });
+      return { success: true as const, edge: result };
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      log("graphiti.getEntityEdge: error", { uuid, error: errorMessage });
+      return { success: false as const, error: errorMessage, edge: null };
+    }
+  }
+
+  async clearGraph(groupIds?: string[]) {
+    log("graphiti.clearGraph: start", { groupIds });
+    try {
+      const result = await this.callMCPTool<{ message: string }>("clear_graph", {
+        group_ids: groupIds,
+      });
+      log("graphiti.clearGraph: success", { groupIds });
+      return { success: true as const, message: result.message };
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      log("graphiti.clearGraph: error", { error: errorMessage });
+      return { success: false as const, error: errorMessage };
+    }
+  }
+
   async getStatus() {
     log("graphiti.getStatus: start");
     try {
@@ -257,10 +273,6 @@ export class GraphitiClient {
     }
   }
 
-  /**
-   * Combined search: returns both nodes and facts for richer context
-   * This replaces the supermemory "profile" + "search" combo
-   */
   async searchMemories(query: string, groupId: string) {
     log("graphiti.searchMemories: start", { groupId });
     try {
@@ -307,9 +319,6 @@ export class GraphitiClient {
     }
   }
 
-  /**
-   * Get user profile - searches for Preference entities for the user
-   */
   async getProfile(userGroupId: string, query?: string) {
     log("graphiti.getProfile: start", { userGroupId });
     try {
@@ -352,9 +361,6 @@ export class GraphitiClient {
     }
   }
 
-  /**
-   * List memories (episodes) for a group
-   */
   async listMemories(groupId: string, limit = 20) {
     log("graphiti.listMemories: start", { groupId, limit });
     try {
@@ -393,9 +399,6 @@ export class GraphitiClient {
     }
   }
 
-  /**
-   * Delete a memory (episode) by ID
-   */
   async deleteMemory(memoryId: string) {
     return this.deleteEpisode(memoryId);
   }
