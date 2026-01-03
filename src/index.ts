@@ -2,15 +2,18 @@ import type { Plugin, PluginInput } from "@opencode-ai/plugin";
 import type { Part } from "@opencode-ai/sdk";
 import { tool } from "@opencode-ai/plugin";
 
-import { graphitiClient } from "./services/graphiti-client.js";
+import { graphitiClient as mcpClient } from "./services/graphiti-client.js";
+import { graphitiRestClient as restClient } from "./services/graphiti-rest-client.js";
 import { formatContextForPrompt } from "./services/context.js";
 import { getTags } from "./services/tags.js";
 import { stripPrivateContent, isFullyPrivate } from "./services/privacy.js";
 import { createCompactionHook, type CompactionContext } from "./services/compaction.js";
 
-import { isConfigured, CONFIG } from "./config.js";
+import { isConfigured, CONFIG, USE_REST_API } from "./config.js";
 import { log } from "./services/logger.js";
 import type { MemoryScope, MemoryType } from "./types/index.js";
+
+const graphitiClient = USE_REST_API ? restClient : mcpClient;
 
 const CODE_BLOCK_PATTERN = /```[\s\S]*?```/g;
 const INLINE_CODE_PATTERN = /`[^`]+`/g;
@@ -534,11 +537,15 @@ export const GraphitiPlugin: Plugin = async (ctx: PluginInput) => {
 
 export const SupermemoryPlugin = GraphitiPlugin;
 
-export { graphitiClient, GraphitiClient } from "./services/graphiti-client.js";
+export { graphitiClient as graphitiMcpClient, GraphitiClient } from "./services/graphiti-client.js";
+export { graphitiRestClient, GraphitiRestClient } from "./services/graphiti-rest-client.js";
+
+const activeClient = USE_REST_API ? restClient : mcpClient;
+export { activeClient as graphitiClient };
 
 export type { MemoryScope, MemoryType, GraphitiNodeResult, GraphitiFactResult, GraphitiEpisodeResult, MemoryResult, UserProfile } from "./types/index.js";
 
-export { isConfigured, CONFIG, GRAPHITI_MCP_URL } from "./config.js";
+export { isConfigured, CONFIG, GRAPHITI_MCP_URL, GRAPHITI_REST_URL, USE_REST_API } from "./config.js";
 
 function formatSearchResults(
   query: string,
