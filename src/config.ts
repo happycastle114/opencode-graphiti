@@ -13,27 +13,25 @@ const CONFIG_FILES = [
 ];
 
 interface GraphitiConfig {
-  // Graphiti MCP Server URL
   mcpUrl?: string;
-  // Default group ID for user scope (derived from git email if not set)
+  restUrl?: string;
+  useRestApi?: boolean;
   userGroupId?: string;
-  // Group ID prefix for project scopes
   groupIdPrefix?: string;
-  // Search configuration
   similarityThreshold?: number;
   maxMemories?: number;
   maxProjectMemories?: number;
   maxProfileItems?: number;
-  // Feature flags
   injectProfile?: boolean;
   injectProjectMemories?: boolean;
   injectRelevantMemories?: boolean;
-  // Entity types to search for
   entityTypes?: string[];
 }
 
 const DEFAULTS: Required<Omit<GraphitiConfig, "userGroupId">> = {
   mcpUrl: "http://localhost:8000/mcp/",
+  restUrl: "http://localhost:8000",
+  useRestApi: true,
   groupIdPrefix: "opencode",
   similarityThreshold: 0.6,
   maxMemories: 5,
@@ -62,13 +60,21 @@ function loadConfig(): GraphitiConfig {
 
 const fileConfig = loadConfig();
 
-// Graphiti MCP Server URL from config or environment
 export const GRAPHITI_MCP_URL = 
   fileConfig.mcpUrl ?? 
   process.env.GRAPHITI_MCP_URL ?? 
   DEFAULTS.mcpUrl;
 
-// Group ID prefix for scoping
+export const GRAPHITI_REST_URL = 
+  fileConfig.restUrl ?? 
+  process.env.GRAPHITI_REST_URL ?? 
+  DEFAULTS.restUrl;
+
+export const USE_REST_API = 
+  fileConfig.useRestApi ?? 
+  (process.env.GRAPHITI_USE_REST_API === "true" || process.env.GRAPHITI_USE_REST_API === undefined) ??
+  DEFAULTS.useRestApi;
+
 export const GROUP_ID_PREFIX = 
   fileConfig.groupIdPrefix ?? 
   process.env.GRAPHITI_GROUP_ID_PREFIX ?? 
@@ -76,6 +82,8 @@ export const GROUP_ID_PREFIX =
 
 export const CONFIG = {
   mcpUrl: GRAPHITI_MCP_URL,
+  restUrl: GRAPHITI_REST_URL,
+  useRestApi: USE_REST_API,
   groupIdPrefix: GROUP_ID_PREFIX,
   similarityThreshold: fileConfig.similarityThreshold ?? DEFAULTS.similarityThreshold,
   maxMemories: fileConfig.maxMemories ?? DEFAULTS.maxMemories,
