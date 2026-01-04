@@ -37,8 +37,6 @@ This is a fork of [opencode-supermemory](https://github.com/supermemoryai/openco
                              └─────────────────────────────────────┘
 ```
 
-**중요**: 이 플러그인은 API key가 필요 없습니다. Graphiti MCP Server URL만 알면 됩니다.
-OpenAI API key는 Graphiti 서버 설정 시 필요합니다.
 
 ## Quick Start
 
@@ -49,7 +47,6 @@ git clone https://github.com/getzep/graphiti.git
 cd graphiti/mcp_server
 
 cp .env.example .env
-# .env 파일에 OPENAI_API_KEY 설정 (Graphiti 서버용)
 
 docker compose up -d
 ```
