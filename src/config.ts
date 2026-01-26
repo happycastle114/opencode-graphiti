@@ -40,7 +40,7 @@ const DEFAULTS: Required<Omit<GraphitiConfig, "userGroupId">> = {
   injectProfile: true,
   injectProjectMemories: true,
   injectRelevantMemories: true,
-  entityTypes: ["Preference", "Requirement", "Procedure", "Topic"],
+  entityTypes: ["Preference", "Requirement", "Procedure", "Location", "Event", "Organization", "Document", "Topic", "Object", "Error", "Lesson", "Pattern"],
 };
 
 function loadConfig(): GraphitiConfig {
