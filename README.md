@@ -32,7 +32,8 @@ This is a fork of [opencode-supermemory](https://github.com/supermemoryai/openco
                              │  └───────┬───────┘  └────────────┘  │
                              │          │                          │
                              │  ┌───────▼───────┐                  │
-                             │  │   FalkorDB    │                  │
+                             │  │  FalkorDB or  │                  │
+                             │  │    Neo4j      │                  │
                              │  └───────────────┘                  │
                              └─────────────────────────────────────┘
 ```
@@ -42,14 +43,36 @@ This is a fork of [opencode-supermemory](https://github.com/supermemoryai/openco
 
 ### 1. Start Graphiti MCP Server
 
+Choose a graph database backend:
+
+#### Option A: FalkorDB (Recommended — easiest setup)
+
 ```bash
+# Using this plugin's docker-compose (recommended):
+export OPENAI_API_KEY=your_key
+docker compose --profile falkordb up -d
+
+# Or using upstream Graphiti:
 git clone https://github.com/getzep/graphiti.git
 cd graphiti/mcp_server
-
 cp .env.example .env
-
 docker compose up -d
 ```
+
+FalkorDB Browser UI: http://localhost:3000
+
+#### Option B: Neo4j (Production-grade graph database)
+
+```bash
+# Using this plugin's docker-compose:
+export OPENAI_API_KEY=your_key
+export NEO4J_PASSWORD=changeme
+docker compose --profile neo4j up -d
+```
+
+Neo4j Browser UI: http://localhost:7474 (credentials: neo4j / changeme)
+
+> **Note**: The plugin itself needs no API keys — OpenAI API key is for the Graphiti server.
 
 ### 2. Install the Plugin
 
@@ -135,7 +158,9 @@ graphiti(mode: "status")
 ## Requirements
 
 - OpenCode 1.0+
-- Graphiti MCP Server running (provides its own LLM/embedding)
+- Graphiti MCP Server running with either:
+  - **FalkorDB** (recommended): `docker compose --profile falkordb up -d`
+  - **Neo4j**: `docker compose --profile neo4j up -d`
 
 ## Troubleshooting
 
