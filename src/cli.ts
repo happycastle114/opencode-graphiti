@@ -10,6 +10,8 @@ const OPENCODE_COMMAND_DIR = join(OPENCODE_CONFIG_DIR, "command");
 const OH_MY_OPENCODE_CONFIG = join(OPENCODE_CONFIG_DIR, "oh-my-opencode.json");
 const PLUGIN_NAME = "opencode-graphiti@latest";
 
+type DatabaseBackend = "falkordb" | "neo4j";
+
 const GRAPHITI_INIT_COMMAND = `---
 description: Initialize Graphiti with comprehensive codebase knowledge
 ---
@@ -175,6 +177,43 @@ async function confirm(rl: readline.Interface, question: string): Promise<boolea
       resolve(answer.toLowerCase() === "y" || answer.toLowerCase() === "yes");
     });
   });
+}
+
+async function promptIndex(
+  rl: readline.Interface,
+  question: string,
+  options: string[]
+): Promise<number> {
+  return new Promise((resolve) => {
+    console.log(question);
+    options.forEach((opt, i) => console.log(`  ${i + 1}) ${opt}`));
+    rl.question("Choose (number): ", (answer) => {
+      const idx = parseInt(answer, 10) - 1;
+      if (idx < 0 || idx >= options.length || isNaN(idx)) {
+        console.log(`  Invalid choice, defaulting to: ${options[0]}`);
+        resolve(0);
+      } else {
+        resolve(idx);
+      }
+    });
+  });
+}
+
+function parseDatabaseArg(args: string[]): { database: DatabaseBackend; explicitlySet: boolean } {
+  const dbIndex = args.indexOf("--database");
+  if (dbIndex === -1) {
+    return { database: "falkordb", explicitlySet: false };
+  }
+  const value = args[dbIndex + 1];
+  if (!value || value.startsWith("-")) {
+    console.error('✗ --database requires a value. Must be "falkordb" or "neo4j".');
+    process.exit(1);
+  }
+  if (value !== "falkordb" && value !== "neo4j") {
+    console.error(`✗ Invalid database: "${value}". Must be "falkordb" or "neo4j".`);
+    process.exit(1);
+  }
+  return { database: value, explicitlySet: true };
 }
 
 function findOpencodeConfig(): string | null {
@@ -356,9 +395,58 @@ function createGraphitiConfig(): boolean {
   return true;
 }
 
+const SERVER_SETUP_INSTRUCTIONS: Record<DatabaseBackend, string[]> = {
+  neo4j: [
+    "Option A: Using this plugin's docker-compose.yml (Recommended)",
+    "  # In the opencode-graphiti directory:",
+    "  export OPENAI_API_KEY=your_key",
+    "  export NEO4J_PASSWORD=changeme",
+    "  docker compose --profile neo4j up -d",
+    "\nOption B: Using upstream Graphiti's docker-compose",
+    "  git clone https://github.com/getzep/graphiti.git",
+    "  cd graphiti/mcp_server",
+    "  cp .env.example .env",
+    "  # .env 파일에 OPENAI_API_KEY와 Neo4j 설정",
+    "  docker compose -f docker/docker-compose-neo4j.yml up -d",
+    "\nNeo4j Browser UI: http://localhost:7474",
+    "Default credentials: neo4j / changeme",
+  ],
+  falkordb: [
+    "Option A: Using this plugin's docker-compose.yml (Recommended)",
+    "  # In the opencode-graphiti directory:",
+    "  export OPENAI_API_KEY=your_key",
+    "  docker compose --profile falkordb up -d",
+    "\nOption B: Using upstream Graphiti's docker-compose",
+    "  git clone https://github.com/getzep/graphiti.git",
+    "  cd graphiti/mcp_server",
+    "  cp .env.example .env",
+    "  # .env 파일에 OPENAI_API_KEY 설정 (Graphiti 서버용)",
+    "  docker compose up -d",
+    "\nFalkorDB Browser UI: http://localhost:3000",
+  ],
+};
+
+function printServerSetupInstructions(database: DatabaseBackend): void {
+  console.log("\n" + "─".repeat(50));
+  console.log("\n🚀 Final step: Start Graphiti MCP Server\n");
+  console.log("Graphiti 서버가 이미 실행 중이면 이 단계는 건너뛰세요.\n");
+
+  for (const line of SERVER_SETUP_INSTRUCTIONS[database]) {
+    console.log(line);
+  }
+
+  console.log("\nNote: 이 플러그인은 API key가 필요 없습니다.");
+  console.log("      OpenAI API key는 Graphiti 서버 설정 시 필요합니다.");
+  console.log("\n" + "─".repeat(50));
+  console.log("\n✓ Setup complete! Restart OpenCode to activate.\n");
+}
+
+/** Options for the install/setup command, parsed from CLI arguments. */
 interface InstallOptions {
   tui: boolean;
   disableAutoCompact: boolean;
+  database: DatabaseBackend;
+  databaseExplicitlySet: boolean;
 }
 
 async function install(options: InstallOptions): Promise<number> {
@@ -444,20 +532,21 @@ async function install(options: InstallOptions): Promise<number> {
     }
   }
 
-  // Step 5: Graphiti server setup instructions
-  console.log("\n" + "─".repeat(50));
-  console.log("\n🚀 Final step: Start Graphiti MCP Server\n");
-  console.log("Graphiti 서버가 이미 실행 중이면 이 단계는 건너뛰세요.\n");
-  console.log("Option 1: Docker Compose (Recommended)");
-  console.log("  git clone https://github.com/getzep/graphiti.git");
-  console.log("  cd graphiti/mcp_server");
-  console.log("  cp .env.example .env");
-  console.log("  # .env 파일에 OPENAI_API_KEY 설정 (Graphiti 서버용)");
-  console.log("  docker compose up -d");
-  console.log("\nNote: 이 플러그인은 API key가 필요 없습니다.");
-  console.log("      OpenAI API key는 Graphiti 서버 설정 시 필요합니다.");
-  console.log("\n" + "─".repeat(50));
-  console.log("\n✓ Setup complete! Restart OpenCode to activate.\n");
+  // Step 5: Choose graph database backend
+  console.log("\nStep 5: Choose graph database backend");
+  let database = options.database;
+  if (options.tui && !options.databaseExplicitlySet) {
+    const backends: DatabaseBackend[] = ["falkordb", "neo4j"];
+    const choiceIdx = await promptIndex(rl!, "Which graph database backend?", [
+      "FalkorDB (default, all-in-one container)",
+      "Neo4j (production-grade, separate container)",
+    ]);
+    database = backends[choiceIdx] ?? "falkordb";
+  }
+  console.log(`✓ Selected: ${database === "neo4j" ? "Neo4j" : "FalkorDB"}`);
+
+  // Step 6: Graphiti server setup instructions
+  printServerSetupInstructions(database);
 
   if (rl) rl.close();
   return 0;
@@ -470,15 +559,18 @@ opencode-graphiti - Persistent memory for OpenCode agents using Graphiti
 Commands:
   install                    Install and configure the plugin
     --no-tui                 Run in non-interactive mode (for LLM agents)
+    --database <backend>     Choose graph database: falkordb (default) or neo4j
     --disable-context-recovery   Disable Oh My OpenCode's context-window-limit-recovery hook (use with --no-tui)
+  setup                      (Deprecated) Alias for install, accepts same flags
 
 Examples:
   bunx opencode-graphiti@latest install
-  bunx opencode-graphiti@latest install --no-tui
+  bunx opencode-graphiti@latest install --database neo4j
+  bunx opencode-graphiti@latest install --no-tui --database neo4j
   bunx opencode-graphiti@latest install --no-tui --disable-context-recovery
 
 Requirements:
-  - Graphiti MCP Server running (docker compose up in graphiti/mcp_server)
+  - Graphiti MCP Server running (see setup instructions during install)
   - No API key needed - Graphiti server handles LLM/embeddings internally
 `);
 }
@@ -490,16 +582,19 @@ if (args.length === 0 || args[0] === "help" || args[0] === "--help" || args[0] =
   process.exit(0);
 }
 
-if (args[0] === "install") {
+function runInstall(args: string[]): void {
   const noTui = args.includes("--no-tui");
   const disableAutoCompact = args.includes("--disable-context-recovery");
-  install({ tui: !noTui, disableAutoCompact }).then((code) => process.exit(code));
+  const { database, explicitlySet } = parseDatabaseArg(args);
+  install({ tui: !noTui, disableAutoCompact, database, databaseExplicitlySet: explicitlySet }).then((code) => process.exit(code));
+}
+
+if (args[0] === "install") {
+  runInstall(args);
 } else if (args[0] === "setup") {
   // Backwards compatibility
   console.log("Note: 'setup' is deprecated. Use 'install' instead.\n");
-  const noTui = args.includes("--no-tui");
-  const disableAutoCompact = args.includes("--disable-context-recovery");
-  install({ tui: !noTui, disableAutoCompact }).then((code) => process.exit(code));
+  runInstall(args);
 } else {
   console.error(`Unknown command: ${args[0]}`);
   printHelp();
