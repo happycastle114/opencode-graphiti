@@ -1,43 +1,43 @@
-# Graphiti MCP Server + FalkorDB for opencode-graphiti plugin
-# 
+# Graphiti MCP Server for opencode-graphiti plugin
+#
 # Usage:
-#   docker compose up -d
+#   FalkorDB (recommended, all-in-one):
+#     docker compose --profile falkordb up -d
+#
+#   Neo4j (production-grade):
+#     docker compose --profile neo4j up -d
 #
 # This starts:
-#   - FalkorDB (Redis-based graph database) on port 6379
-#   - FalkorDB Browser UI on port 3000
-#   - Graphiti MCP Server on port 8000 (HTTP endpoint at /mcp/)
+#   FalkorDB mode: Graphiti MCP Server with bundled FalkorDB
+#   Neo4j mode:    Neo4j database + Graphiti MCP Server (standalone)
+#
+# MCP endpoint (both modes): http://localhost:8000/mcp/
 
-version: "3.8"
+x-graphiti-env: &graphiti-env
+  OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+  ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+  GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}
+  GROQ_API_KEY: ${GROQ_API_KEY:-}
+  GRAPHITI_GROUP_ID: ${GRAPHITI_GROUP_ID:-main}
+  SEMAPHORE_LIMIT: ${SEMAPHORE_LIMIT:-10}
 
 services:
+  # === FalkorDB (Recommended) ===
   graphiti-mcp:
     image: zepai/knowledge-graph-mcp:latest
     container_name: graphiti-mcp
+    profiles:
+      - falkordb
     ports:
       - "8000:8000"   # MCP HTTP endpoint
       - "6379:6379"   # FalkorDB Redis port
       - "3000:3000"   # FalkorDB Browser UI
     environment:
-      # Required: OpenAI API key for embeddings and LLM
-      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
-      
-      # Optional: Other LLM providers
-      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
-      - GOOGLE_API_KEY=${GOOGLE_API_KEY:-}
-      - GROQ_API_KEY=${GROQ_API_KEY:-}
-      
-      # Graphiti configuration
-      - GRAPHITI_GROUP_ID=${GRAPHITI_GROUP_ID:-main}
-      - SEMAPHORE_LIMIT=${SEMAPHORE_LIMIT:-10}
-      
-      # FalkorDB configuration (internal)
-      - FALKORDB_URI=redis://localhost:6379
-      - FALKORDB_PASSWORD=
-      - FALKORDB_DATABASE=default_db
-      
-      # Enable browser UI
-      - BROWSER=1
+      <<: *graphiti-env
+      FALKORDB_URI: redis://localhost:6379
+      FALKORDB_PASSWORD: ""
+      FALKORDB_DATABASE: default_db
+      BROWSER: "1"
     volumes:
       - graphiti-data:/data
     restart: unless-stopped
@@ -48,35 +48,54 @@ services:
       retries: 3
       start_period: 10s
 
+  # === Neo4j ===
+  neo4j:
+    image: neo4j:5.26
+    container_name: graphiti-neo4j
+    profiles:
+      - neo4j
+    ports:
+      - "7474:7474"   # Browser
+      - "7687:7687"   # Bolt
+    environment:
+      NEO4J_AUTH: neo4j/${NEO4J_PASSWORD:-changeme}
+      NEO4J_PLUGINS: '["apoc"]'
+    volumes:
+      - neo4j-data:/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:7474 || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  graphiti-mcp-neo4j:
+    image: zepai/knowledge-graph-mcp:standalone
+    container_name: graphiti-mcp-neo4j
+    profiles:
+      - neo4j
+    ports:
+      - "8000:8000"   # MCP HTTP endpoint
+    environment:
+      <<: *graphiti-env
+      DATABASE__PROVIDER: neo4j
+      DATABASE__PROVIDERS__NEO4J__URI: bolt://neo4j:7687
+      DATABASE__PROVIDERS__NEO4J__USERNAME: neo4j
+      DATABASE__PROVIDERS__NEO4J__PASSWORD: ${NEO4J_PASSWORD:-changeme}
+    depends_on:
+      neo4j:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+
 volumes:
   graphiti-data:
     driver: local
-
-# Optional: Separate container setup with Neo4j instead of FalkorDB
-# Uncomment below and comment out the graphiti-mcp service above
-#
-# services:
-#   neo4j:
-#     image: neo4j:5.26
-#     container_name: graphiti-neo4j
-#     ports:
-#       - "7474:7474"  # Browser
-#       - "7687:7687"  # Bolt
-#     environment:
-#       - NEO4J_AUTH=neo4j/your_password
-#       - NEO4J_PLUGINS=["apoc"]
-#     volumes:
-#       - neo4j-data:/data
-#
-#   graphiti-mcp-standalone:
-#     image: zepai/knowledge-graph-mcp:standalone
-#     container_name: graphiti-mcp
-#     ports:
-#       - "8000:8000"
-#     environment:
-#       - OPENAI_API_KEY=${OPENAI_API_KEY}
-#       - NEO4J_URI=bolt://neo4j:7687
-#       - NEO4J_USER=neo4j
-#       - NEO4J_PASSWORD=your_password
-#     depends_on:
-#       - neo4j
+  neo4j-data:
+    driver: local
