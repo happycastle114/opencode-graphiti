@@ -407,13 +407,17 @@ export class GraphitiClient {
     }
   }
 
-  async searchMemories(query: string, groupId: string, options?: { centerNodeUuid?: string }) {
+  async searchMemories(query: string, groupId: string, options?: {
+    centerNodeUuid?: string;
+    entityTypes?: string[];
+    messages?: Array<{ content: string; role: "user" | "assistant" | "system" }>;
+  }) {
     log("graphiti.searchMemories: start", { groupId });
     try {
       const [nodesResult, factsResult] = await Promise.all([
         this.searchNodes(query, [groupId], { 
           maxNodes: CONFIG.maxMemories,
-          entityTypes: CONFIG.entityTypes as string[],
+          entityTypes: options?.entityTypes || CONFIG.entityTypes as string[],
         }),
         this.searchFacts(query, [groupId], { 
           maxFacts: CONFIG.maxMemories,
@@ -427,7 +431,7 @@ export class GraphitiClient {
         ...(nodesResult.nodes || []).map((node) => ({
           id: node.uuid,
           memory: node.summary || node.name,
-          similarity: 0.9,
+          similarity: 0.9 as number | null,
           type: "node" as const,
           labels: node.labels,
           createdAt: node.created_at,
@@ -435,7 +439,7 @@ export class GraphitiClient {
         ...validFacts.map((fact) => ({
           id: fact.uuid || `fact-${Date.now()}`,
           memory: this.formatFactWithRelationship(fact),
-          similarity: 0.85,
+          similarity: 0.85 as number | null,
           type: "fact" as const,
           createdAt: fact.created_at,
           validAt: fact.valid_at,
