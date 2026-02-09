@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { stripJsoncComments } from "./services/jsonc.js";
@@ -43,21 +43,59 @@ const DEFAULTS: Required<Omit<GraphitiConfig, "userGroupId">> = {
   entityTypes: ["Preference", "Requirement", "Procedure", "Location", "Event", "Organization", "Document", "Topic", "Object", "Error", "Lesson", "Pattern"],
 };
 
-function loadConfig(): GraphitiConfig {
+/** Track config file modification time for hot-reload */
+let _cachedConfig: GraphitiConfig | null = null;
+let _cachedConfigPath: string | null = null;
+let _cachedConfigMtime: number = 0;
+
+function findConfigFile(): string | null {
   for (const path of CONFIG_FILES) {
     if (existsSync(path)) {
-      try {
-        const content = readFileSync(path, "utf-8");
-        const json = stripJsoncComments(content);
-        return JSON.parse(json) as GraphitiConfig;
-      } catch {
-        // Invalid config, continue to next file
-      }
+      return path;
     }
   }
-  return {};
+  return null;
 }
 
+function loadConfigFromFile(path: string): GraphitiConfig {
+  try {
+    const content = readFileSync(path, "utf-8");
+    const json = stripJsoncComments(content);
+    return JSON.parse(json) as GraphitiConfig;
+  } catch {
+    return {};
+  }
+}
+
+function loadConfig(): GraphitiConfig {
+  const configPath = findConfigFile();
+  if (!configPath) {
+    _cachedConfig = {};
+    _cachedConfigPath = null;
+    _cachedConfigMtime = 0;
+    return {};
+  }
+
+  try {
+    const stat = statSync(configPath);
+    const mtime = stat.mtimeMs;
+
+    // Return cached if file hasn't changed
+    if (_cachedConfig && _cachedConfigPath === configPath && _cachedConfigMtime === mtime) {
+      return _cachedConfig;
+    }
+
+    const config = loadConfigFromFile(configPath);
+    _cachedConfig = config;
+    _cachedConfigPath = configPath;
+    _cachedConfigMtime = mtime;
+    return config;
+  } catch {
+    return _cachedConfig || {};
+  }
+}
+
+// Initial load
 const fileConfig = loadConfig();
 
 export const GRAPHITI_MCP_URL = 
@@ -80,20 +118,42 @@ export const GROUP_ID_PREFIX =
   process.env.GRAPHITI_GROUP_ID_PREFIX ?? 
   DEFAULTS.groupIdPrefix;
 
-export const CONFIG = {
-  mcpUrl: GRAPHITI_MCP_URL,
-  restUrl: GRAPHITI_REST_URL,
-  useRestApi: USE_REST_API,
-  groupIdPrefix: GROUP_ID_PREFIX,
-  similarityThreshold: fileConfig.similarityThreshold ?? DEFAULTS.similarityThreshold,
-  maxMemories: fileConfig.maxMemories ?? DEFAULTS.maxMemories,
-  maxProjectMemories: fileConfig.maxProjectMemories ?? DEFAULTS.maxProjectMemories,
-  maxProfileItems: fileConfig.maxProfileItems ?? DEFAULTS.maxProfileItems,
-  injectProfile: fileConfig.injectProfile ?? DEFAULTS.injectProfile,
-  injectProjectMemories: fileConfig.injectProjectMemories ?? DEFAULTS.injectProjectMemories,
-  injectRelevantMemories: fileConfig.injectRelevantMemories ?? DEFAULTS.injectRelevantMemories,
-  entityTypes: fileConfig.entityTypes ?? DEFAULTS.entityTypes,
-};
+/**
+ * CONFIG object with hot-reload support.
+ * Re-reads config file on each property access if the file has been modified.
+ * Note: mcpUrl, restUrl, useRestApi, groupIdPrefix are read once at startup
+ * (changing them requires restart). All other values support hot-reload.
+ */
+function createHotReloadConfig() {
+  const staticValues = {
+    mcpUrl: GRAPHITI_MCP_URL,
+    restUrl: GRAPHITI_REST_URL,
+    useRestApi: USE_REST_API,
+    groupIdPrefix: GROUP_ID_PREFIX,
+  };
+
+  function getReloadableValue<K extends keyof GraphitiConfig>(key: K): GraphitiConfig[K] | undefined {
+    const fresh = loadConfig();
+    return fresh[key];
+  }
+
+  return {
+    get mcpUrl() { return staticValues.mcpUrl; },
+    get restUrl() { return staticValues.restUrl; },
+    get useRestApi() { return staticValues.useRestApi; },
+    get groupIdPrefix() { return staticValues.groupIdPrefix; },
+    get similarityThreshold() { return getReloadableValue("similarityThreshold") ?? DEFAULTS.similarityThreshold; },
+    get maxMemories() { return getReloadableValue("maxMemories") ?? DEFAULTS.maxMemories; },
+    get maxProjectMemories() { return getReloadableValue("maxProjectMemories") ?? DEFAULTS.maxProjectMemories; },
+    get maxProfileItems() { return getReloadableValue("maxProfileItems") ?? DEFAULTS.maxProfileItems; },
+    get injectProfile() { return getReloadableValue("injectProfile") ?? DEFAULTS.injectProfile; },
+    get injectProjectMemories() { return getReloadableValue("injectProjectMemories") ?? DEFAULTS.injectProjectMemories; },
+    get injectRelevantMemories() { return getReloadableValue("injectRelevantMemories") ?? DEFAULTS.injectRelevantMemories; },
+    get entityTypes() { return getReloadableValue("entityTypes") ?? DEFAULTS.entityTypes; },
+  };
+}
+
+export const CONFIG = createHotReloadConfig();
 
 /**
  * Check if Graphiti MCP server is configured and reachable

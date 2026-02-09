@@ -494,18 +494,35 @@ export class GraphitiRestClient {
 
   /**
    * Search memories (unified search combining facts)
-   * Note: REST API doesn't have separate node search, so we only search facts
+   * Note: REST API doesn't have separate node search, so we only search facts.
+   * When messages are provided, uses getMemory() for conversation-aware retrieval.
    */
   async searchMemories(
     query: string,
     groupId: string,
-    options?: { centerNodeUuid?: string }
+    options?: {
+      centerNodeUuid?: string;
+      entityTypes?: string[];
+      messages?: Array<{ content: string; role: "user" | "assistant" | "system" }>;
+    }
   ) {
-    log("graphiti.searchMemories: start", { groupId });
+    log("graphiti.searchMemories: start", { groupId, hasMessages: !!(options?.messages?.length) });
     try {
-      const factsResult = await this.searchFacts(query, [groupId], {
-        maxFacts: CONFIG.maxMemories,
-      });
+      let factsResult: { facts: GraphitiFactResult[]; success: boolean };
+
+      // Use getMemory for conversation-aware retrieval when messages are available
+      if (options?.messages && options.messages.length > 0) {
+        const memoryResult = await this.getMemory(groupId, options.messages, {
+          maxFacts: CONFIG.maxMemories,
+          centerNodeUuid: options.centerNodeUuid,
+        });
+        factsResult = { facts: memoryResult.facts || [], success: memoryResult.success };
+      } else {
+        const searchResult = await this.searchFacts(query, [groupId], {
+          maxFacts: CONFIG.maxMemories,
+        });
+        factsResult = { facts: searchResult.facts || [], success: searchResult.success };
+      }
 
       // Filter out invalid facts (temporal validity)
       const validFacts = (factsResult.facts || []).filter(
@@ -515,7 +532,7 @@ export class GraphitiRestClient {
       const results = validFacts.map((fact) => ({
         id: fact.uuid || `fact-${Date.now()}`,
         memory: fact.fact || fact.name || "",
-        similarity: 0.85,
+        similarity: null as number | null,
         type: "fact" as const,
         createdAt: fact.created_at,
         validAt: fact.valid_at,

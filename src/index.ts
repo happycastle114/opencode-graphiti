@@ -19,7 +19,7 @@ const CODE_BLOCK_PATTERN = /```[\s\S]*?```/g;
 const INLINE_CODE_PATTERN = /`[^`]+`/g;
 
 const MEMORY_KEYWORD_PATTERN =
-  /\b(remember|memorize|save\s+this|note\s+this|keep\s+in\s+mind|don'?t\s+forget|learn\s+this|store\s+this|record\s+this|make\s+a\s+note|take\s+note|jot\s+down|commit\s+to\s+memory|remember\s+that|never\s+forget|always\s+remember)\b/i;
+  /\b(remember|memorize|save\s+this|note\s+this|keep\s+in\s+mind|don'?t\s+forget|learn\s+this|store\s+this|record\s+this|make\s+a\s+note|take\s+note|jot\s+down|commit\s+to\s+memory|remember\s+that|never\s+forget|always\s+remember)\b|(?:기억해|메모해|잊지\s*마|기억해둬|저장해|메모해둬|외워|잊어버리지\s*마)|(?:覚えて|メモして|忘れないで)/i;
 
 const MEMORY_NUDGE_MESSAGE = `[MEMORY TRIGGER DETECTED]
 The user wants you to remember something. You MUST use the \`graphiti\` tool with \`mode: "add"\` to save this information.
@@ -101,10 +101,15 @@ export const GraphitiPlugin: Plugin = async (ctx: PluginInput) => {
         if (isFirstMessage) {
           injectedSessions.add(input.sessionID);
 
+          // Build conversation messages for context-aware retrieval
+          const conversationMessages: Array<{ content: string; role: "user" | "assistant" | "system" }> = [
+            { content: userMessage, role: "user" },
+          ];
+
           const [profileResult, userMemoriesResult, projectMemoriesResult] = await Promise.all([
             graphitiClient.getProfile(tags.user, userMessage),
-            graphitiClient.searchMemories(userMessage, tags.user),
-            graphitiClient.searchMemories(userMessage, tags.project),
+            graphitiClient.searchMemories(userMessage, tags.user, { messages: conversationMessages }),
+            graphitiClient.searchMemories(userMessage, tags.project, { messages: conversationMessages }),
           ]);
 
           const profile = profileResult.success ? profileResult : null;
@@ -274,6 +279,40 @@ export const GraphitiPlugin: Plugin = async (ctx: PluginInput) => {
                 const groupId =
                   scope === "user" ? tags.user : tags.project;
 
+                // Deduplication: check if very similar content already exists
+                try {
+                  const existingResult = await graphitiClient.searchMemories(
+                    sanitizedContent,
+                    groupId,
+                  );
+                  if (existingResult.success && existingResult.results?.length) {
+                    const duplicate = existingResult.results.find((r) => {
+                      // For scored results, use similarity threshold
+                      if (r.similarity != null && r.similarity > 0.9) return true;
+                      // For unscored results, check content similarity via string matching
+                      if (r.similarity == null && r.memory) {
+                        const existingNorm = r.memory.toLowerCase().trim();
+                        const newNorm = sanitizedContent.toLowerCase().trim();
+                        return existingNorm === newNorm || existingNorm.includes(newNorm) || newNorm.includes(existingNorm);
+                      }
+                      return false;
+                    });
+                    if (duplicate) {
+                      log("add: duplicate detected, skipping", { existingId: duplicate.id });
+                      return JSON.stringify({
+                        success: true,
+                        message: `Similar memory already exists (id: ${duplicate.id}), skipping duplicate`,
+                        duplicate: true,
+                        existingId: duplicate.id,
+                        scope,
+                      });
+                    }
+                  }
+                } catch {
+                  // Deduplication check failed, proceed with add anyway
+                  log("add: deduplication check failed, proceeding");
+                }
+
                 const result = await graphitiClient.addMemory(
                   sanitizedContent,
                   groupId,
@@ -307,7 +346,10 @@ export const GraphitiPlugin: Plugin = async (ctx: PluginInput) => {
                   });
                 }
 
-                const searchOptions = { centerNodeUuid: args.centerNodeId };
+                const searchOptions = {
+                  centerNodeUuid: args.centerNodeId,
+                  entityTypes: args.entityTypes,
+                };
                 const scope = args.scope;
 
                 if (scope === "user") {
@@ -361,7 +403,7 @@ export const GraphitiPlugin: Plugin = async (ctx: PluginInput) => {
                     ...r,
                     scope: "project" as const,
                   })),
-                ].sort((a, b) => b.similarity - a.similarity);
+                ].sort((a, b) => (b.similarity ?? 0) - (a.similarity ?? 0));
 
                 return JSON.stringify({
                   success: true,
@@ -370,7 +412,7 @@ export const GraphitiPlugin: Plugin = async (ctx: PluginInput) => {
                   results: combined.slice(0, args.limit || 10).map((r) => ({
                     id: r.id,
                     content: r.memory,
-                    similarity: Math.round(r.similarity * 100),
+                    similarity: r.similarity != null ? Math.round(r.similarity * 100) : null,
                     scope: r.scope,
                     type: r.type,
                     labels: "labels" in r ? r.labels : undefined,
@@ -550,7 +592,7 @@ export { isConfigured, CONFIG, GRAPHITI_MCP_URL, GRAPHITI_REST_URL, USE_REST_API
 function formatSearchResults(
   query: string,
   scope: string | undefined,
-  results: { results?: Array<{ id: string; memory?: string; similarity: number; type?: string }> },
+  results: { results?: Array<{ id: string; memory?: string; similarity: number | null; type?: string }> },
   limit?: number
 ): string {
   const memoryResults = results.results || [];
@@ -562,7 +604,7 @@ function formatSearchResults(
     results: memoryResults.slice(0, limit || 10).map((r) => ({
       id: r.id,
       content: r.memory,
-      similarity: Math.round(r.similarity * 100),
+      similarity: r.similarity != null ? Math.round(r.similarity * 100) : null,
       type: r.type,
     })),
   });

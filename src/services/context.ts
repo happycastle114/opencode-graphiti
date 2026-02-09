@@ -23,13 +23,13 @@ function formatTemporalTag(mem: MemoryResult): string {
 }
 
 function formatMemoryLine(mem: MemoryResult): string {
-  const similarity = Math.round(mem.similarity * 100);
   const content = mem.memory || "";
   const typeTag = mem.type ? `[${mem.type}]` : "";
   const temporalTag = formatTemporalTag(mem);
   const labelTag = mem.labels?.length ? `[${mem.labels.join(",")}]` : "";
+  const similarityTag = mem.similarity != null ? `[${Math.round(mem.similarity * 100)}%]` : "";
   
-  const tags = [typeTag, labelTag, temporalTag, `[${similarity}%]`]
+  const tags = [typeTag, labelTag, temporalTag, similarityTag]
     .filter(Boolean)
     .join("");
   

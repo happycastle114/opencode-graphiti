@@ -11,8 +11,33 @@ const PART_STORAGE = join(homedir(), ".opencode", "parts");
 const DEFAULT_THRESHOLD = 0.80;
 const MIN_TOKENS_FOR_COMPACTION = 50_000;
 const COMPACTION_COOLDOWN_MS = 30_000;
-const CLAUDE_DEFAULT_CONTEXT_LIMIT = 200_000;
-const CLAUDE_MODEL_PATTERN = /claude-(opus|sonnet|haiku)/i;
+
+/** Model context limits (token counts) */
+const MODEL_CONTEXT_LIMITS: Record<string, number> = {
+  "claude-opus": 200_000,
+  "claude-sonnet": 200_000,
+  "claude-haiku": 200_000,
+  "gemini": 1_000_000,
+  "gpt-4o": 128_000,
+  "gpt-4": 128_000,
+  "gpt-5": 200_000,
+  "o1": 200_000,
+  "o3": 200_000,
+  "deepseek": 128_000,
+  "qwen": 128_000,
+};
+
+const DEFAULT_CONTEXT_LIMIT = 200_000;
+
+const SUPPORTED_MODEL_PATTERNS = [
+  /claude-(opus|sonnet|haiku)/i,
+  /gemini/i,
+  /gpt-4o?/i,
+  /gpt-5/i,
+  /\bo[13]\b/i,
+  /deepseek/i,
+  /qwen/i,
+];
 
 interface CompactionState {
   lastCompactionTime: Map<string, number>;
@@ -99,7 +124,17 @@ This context is critical for maintaining continuity after compaction.
 }
 
 function isSupportedModel(modelID: string): boolean {
-  return CLAUDE_MODEL_PATTERN.test(modelID);
+  return SUPPORTED_MODEL_PATTERNS.some((pattern) => pattern.test(modelID));
+}
+
+function getModelContextLimit(modelID: string): number {
+  const lowerModel = modelID.toLowerCase();
+  for (const [key, limit] of Object.entries(MODEL_CONTEXT_LIMITS)) {
+    if (lowerModel.includes(key)) {
+      return limit;
+    }
+  }
+  return DEFAULT_CONTEXT_LIMIT;
 }
 
 function getMessageDir(sessionID: string): string | null {
@@ -350,7 +385,7 @@ export function createCompactionHook(
     }
 
     const configLimit = getModelLimit?.(providerID, modelID);
-    const contextLimit = configLimit ?? CLAUDE_DEFAULT_CONTEXT_LIMIT;
+    const contextLimit = configLimit ?? getModelContextLimit(modelID);
     const totalUsed = tokens.input + tokens.cache.read + tokens.output;
 
     if (totalUsed < MIN_TOKENS_FOR_COMPACTION) return;

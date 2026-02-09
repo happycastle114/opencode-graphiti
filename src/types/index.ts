@@ -62,7 +62,8 @@ export type EpisodeSource = "text" | "json" | "message";
 export interface MemoryResult {
   id: string;
   memory?: string;
-  similarity: number;
+  /** Similarity score (0-1). null means unscored (e.g. REST API doesn't return scores). */
+  similarity: number | null;
   type?: "node" | "fact" | "episode";
   labels?: string[];
   metadata?: Record<string, unknown>;
