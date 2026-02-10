@@ -290,9 +290,11 @@ export const GraphitiPlugin: Plugin = async (ctx: PluginInput) => {
                       // For scored results, use similarity threshold
                       if (r.similarity != null && r.similarity > 0.9) return true;
                       // For unscored results, check content similarity via string matching
+                      // Only apply for content with reasonable length (>50 chars) to avoid false matches
                       if (r.similarity == null && r.memory) {
                         const existingNorm = r.memory.toLowerCase().trim();
                         const newNorm = sanitizedContent.toLowerCase().trim();
+                        if (newNorm.length < 50) return existingNorm === newNorm;
                         return existingNorm === newNorm || existingNorm.includes(newNorm) || newNorm.includes(existingNorm);
                       }
                       return false;
@@ -578,16 +580,6 @@ export const GraphitiPlugin: Plugin = async (ctx: PluginInput) => {
 };
 
 export const SupermemoryPlugin = GraphitiPlugin;
-
-export { graphitiClient as graphitiMcpClient, GraphitiClient } from "./services/graphiti-client.js";
-export { graphitiRestClient, GraphitiRestClient } from "./services/graphiti-rest-client.js";
-
-const activeClient = USE_REST_API ? restClient : mcpClient;
-export { activeClient as graphitiClient };
-
-export type { MemoryScope, MemoryType, GraphitiNodeResult, GraphitiFactResult, GraphitiEpisodeResult, MemoryResult, UserProfile } from "./types/index.js";
-
-export { isConfigured, CONFIG, GRAPHITI_MCP_URL, GRAPHITI_REST_URL, USE_REST_API } from "./config.js";
 
 function formatSearchResults(
   query: string,
