@@ -431,7 +431,7 @@ export class GraphitiClient {
         ...(nodesResult.nodes || []).map((node) => ({
           id: node.uuid,
           memory: node.summary || node.name,
-          similarity: 0.9 as number | null,
+          similarity: null as number | null,
           type: "node" as const,
           labels: node.labels,
           createdAt: node.created_at,
@@ -439,7 +439,7 @@ export class GraphitiClient {
         ...validFacts.map((fact) => ({
           id: fact.uuid || `fact-${Date.now()}`,
           memory: this.formatFactWithRelationship(fact),
-          similarity: 0.85 as number | null,
+          similarity: null as number | null,
           type: "fact" as const,
           createdAt: fact.created_at,
           validAt: fact.valid_at,

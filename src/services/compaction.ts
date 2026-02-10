@@ -34,7 +34,7 @@ const SUPPORTED_MODEL_PATTERNS = [
   /gemini/i,
   /gpt-4o?/i,
   /gpt-5/i,
-  /\bo[13]\b/i,
+  /(?:^|[-/])o[13](?:$|[-/])/i,
   /deepseek/i,
   /qwen/i,
 ];
