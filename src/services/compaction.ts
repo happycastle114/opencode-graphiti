@@ -168,7 +168,21 @@ function getOrCreateMessageDir(sessionID: string): string {
   return directPath;
 }
 
-function findNearestMessageWithFields(messageDir: string): StoredMessage | null {
+// Agents to skip when scanning the cache for a "trusted" agent value.
+// "general" is OpenCode's default fallback agent and frequently leaks into the
+// cache when an agent is briefly unset (e.g. during the synthetic Continue
+// message after auto-compaction). Reusing it here would silently downgrade the
+// active session's agent on the next compaction cycle, so we treat it as
+// untrusted and keep scanning for an explicit non-default agent.
+const UNTRUSTED_CACHE_AGENTS = new Set(["general", "build"]);
+
+function findNearestMessageWithFields(
+  messageDir: string,
+  options: { allowUntrustedAgent?: boolean } = {},
+): StoredMessage | null {
+  const { allowUntrustedAgent = false } = options;
+  let untrustedFallback: StoredMessage | null = null;
+
   try {
     const files = readdirSync(messageDir)
       .filter((f) => f.endsWith(".json"))
@@ -179,9 +193,16 @@ function findNearestMessageWithFields(messageDir: string): StoredMessage | null 
       try {
         const content = readFileSync(join(messageDir, file), "utf-8");
         const msg = JSON.parse(content) as StoredMessage;
-        if (msg.agent && msg.model?.providerID && msg.model?.modelID) {
-          return msg;
+        if (!msg.agent || !msg.model?.providerID || !msg.model?.modelID) continue;
+
+        if (UNTRUSTED_CACHE_AGENTS.has(msg.agent)) {
+          // Remember the most recent untrusted match so we can fall back to it
+          // if the entire history is poisoned, but keep looking for a real agent.
+          if (!untrustedFallback) untrustedFallback = msg;
+          continue;
         }
+
+        return msg;
       } catch {
         continue;
       }
@@ -189,7 +210,8 @@ function findNearestMessageWithFields(messageDir: string): StoredMessage | null 
   } catch {
     return null;
   }
-  return null;
+
+  return allowUntrustedAgent ? untrustedFallback : null;
 }
 
 function generateMessageId(): string {
@@ -219,7 +241,7 @@ function injectHookMessage(
   }
 
   const messageDir = getOrCreateMessageDir(sessionID);
-  const fallback = findNearestMessageWithFields(messageDir);
+  const fallback = findNearestMessageWithFields(messageDir, { allowUntrustedAgent: true });
 
   const now = Date.now();
   const messageID = generateMessageId();
@@ -450,15 +472,17 @@ export function createCompactionHook(
 
       state.compactionInProgress.delete(sessionID);
 
+      const continuationAgent = agent;
       setTimeout(async () => {
         try {
           const messageDir = getMessageDir(sessionID);
           const storedMessage = messageDir ? findNearestMessageWithFields(messageDir) : null;
+          const resolvedAgent = continuationAgent ?? storedMessage?.agent;
 
           await ctx.client.session.promptAsync({
             path: { id: sessionID },
             body: {
-              agent: storedMessage?.agent,
+              ...(resolvedAgent ? { agent: resolvedAgent } : {}),
               parts: [{ type: "text", text: "Continue" }],
             },
             query: { directory: ctx.directory },
@@ -570,7 +594,9 @@ export function createCompactionHook(
 
           if (!lastAssistant.providerID || !lastAssistant.modelID) {
             const messageDir = getMessageDir(sessionID);
-            const storedMessage = messageDir ? findNearestMessageWithFields(messageDir) : null;
+            const storedMessage = messageDir
+              ? findNearestMessageWithFields(messageDir, { allowUntrustedAgent: true })
+              : null;
             if (storedMessage?.model?.providerID && storedMessage?.model?.modelID) {
               lastAssistant.providerID = storedMessage.model.providerID;
               lastAssistant.modelID = storedMessage.model.modelID;
