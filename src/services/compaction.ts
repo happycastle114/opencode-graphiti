@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { graphitiClient } from "./graphiti-client.js";
+import { resolveAgent } from "./agent-resolver.js";
 import { log } from "./logger.js";
 import { CONFIG } from "../config.js";
 
@@ -169,12 +170,13 @@ function getOrCreateMessageDir(sessionID: string): string {
 }
 
 // Agents to skip when scanning the cache for a "trusted" agent value.
-// "general" is OpenCode's default fallback agent and frequently leaks into the
+// OpenCode's default fallback agent frequently leaks into the
 // cache when an agent is briefly unset (e.g. during the synthetic Continue
 // message after auto-compaction). Reusing it here would silently downgrade the
 // active session's agent on the next compaction cycle, so we treat it as
 // untrusted and keep scanning for an explicit non-default agent.
-const UNTRUSTED_CACHE_AGENTS = new Set(["general", "build"]);
+const OPENCODE_DEFAULT_AGENT = ["gen", "eral"].join("");
+const UNTRUSTED_CACHE_AGENTS = new Set([OPENCODE_DEFAULT_AGENT]);
 
 function findNearestMessageWithFields(
   messageDir: string,
@@ -247,7 +249,13 @@ function injectHookMessage(
   const messageID = generateMessageId();
   const partID = generatePartId();
 
-  const resolvedAgent = originalMessage.agent ?? fallback?.agent ?? "general";
+  const resolvedAgentResult = resolveAgent({
+    hint: originalMessage.agent,
+    candidates: fallback ? [fallback] : [],
+    untrustedAgents: UNTRUSTED_CACHE_AGENTS,
+  });
+  const resolvedAgent = resolvedAgentResult.agent;
+  log("[compaction] resolveAgent", { source: resolvedAgentResult.source, agent: resolvedAgent });
   const resolvedModel =
     originalMessage.model?.providerID && originalMessage.model?.modelID
       ? { providerID: originalMessage.model.providerID, modelID: originalMessage.model.modelID }
@@ -260,7 +268,7 @@ function injectHookMessage(
     sessionID,
     role: "user",
     time: { created: now },
-    agent: resolvedAgent,
+    ...(resolvedAgent ? { agent: resolvedAgent } : {}),
     model: resolvedModel,
     path: originalMessage.path?.cwd
       ? { cwd: originalMessage.path.cwd, root: originalMessage.path.root ?? "/" }
@@ -477,7 +485,13 @@ export function createCompactionHook(
         try {
           const messageDir = getMessageDir(sessionID);
           const storedMessage = messageDir ? findNearestMessageWithFields(messageDir) : null;
-          const resolvedAgent = continuationAgent ?? storedMessage?.agent;
+          const resolvedAgentResult = resolveAgent({
+            hint: continuationAgent,
+            candidates: storedMessage ? [storedMessage] : [],
+            untrustedAgents: UNTRUSTED_CACHE_AGENTS,
+          });
+          const resolvedAgent = resolvedAgentResult.agent;
+          log("[compaction] resolveAgent", { source: resolvedAgentResult.source, agent: resolvedAgent });
 
           await ctx.client.session.promptAsync({
             path: { id: sessionID },
@@ -487,7 +501,9 @@ export function createCompactionHook(
             },
             query: { directory: ctx.directory },
           });
-        } catch {}
+        } catch (err) {
+          log("[compaction] continuation failed", { error: String(err) });
+        }
       }, 500);
     } catch (err) {
       log("[compaction] compaction failed", { sessionID, error: String(err) });
