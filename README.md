@@ -12,6 +12,9 @@ This is a fork of [opencode-supermemory](https://github.com/supermemoryai/openco
 - **"Remember" Trigger Detection**: Automatically prompts agent to save when user says "remember this"
 - **Context Compaction**: Saves session summaries before context window limits
 - **Hybrid Search**: Semantic + keyword search via Graphiti MCP Server
+- **Session Replay**: Sanitized user/assistant timelines recorded locally for inspection
+- **Local Memory Dashboard**: Loopback-only, read-only dashboard for profile, memories, and replay
+- **Read-only Dream Reflection**: Reviews temporal profile facts and recent episodes before an agent saves a new durable memory
 
 ## Architecture
 
@@ -102,7 +105,12 @@ Create `~/.config/opencode/graphiti.jsonc`:
   
   // Search limits
   "maxMemories": 5,
-  "maxProjectMemories": 10
+  "maxProjectMemories": 10,
+
+  // Session capture and replay
+  "autoSaveTurns": true,
+  "enableReplay": true,
+  "enableCompaction": false
 }
 ```
 
@@ -135,9 +143,19 @@ graphiti(mode: "add", content: "Uses Bun for package management", type: "project
 graphiti(mode: "search", query: "testing patterns")
 graphiti(mode: "list", scope: "project", limit: 20)
 graphiti(mode: "profile")
+graphiti(mode: "replay", sessionId: "session-id")
+graphiti(mode: "dream", scope: "user") // read-only reflection; it never mutates memory
 graphiti(mode: "forget", memoryId: "uuid-here")
 graphiti(mode: "status")
 ```
+
+### Local Dashboard
+
+```bash
+opencode-graphiti dashboard --port 4318
+```
+
+The dashboard binds only to `127.0.0.1`, does not open a browser itself, and contains no mutation controls. It shows sanitized replay text from `~/.opencode-graphiti/replays`, user profile facts, and user/project Graphiti memories.
 
 ### Memory Scopes
 
