@@ -8,6 +8,7 @@ import { formatContextForPrompt } from "./services/context.js";
 import { getTags } from "./services/tags.js";
 import { stripPrivateContent, isFullyPrivate } from "./services/privacy.js";
 import { createCompactionHook, type CompactionContext } from "./services/compaction.js";
+import { buildReplayTimeline, loadReplayTimeline, saveReplayTimeline } from "./services/replay.js";
 
 import { isConfigured, CONFIG, USE_REST_API } from "./config.js";
 import { log } from "./services/logger.js";
@@ -40,19 +41,165 @@ function detectMemoryKeyword(text: string): boolean {
   return MEMORY_KEYWORD_PATTERN.test(textWithoutCode);
 }
 
+interface MessageInfoLike {
+  id?: string;
+  role?: string;
+  sessionID?: string;
+  finish?: string | boolean;
+  time?: { created?: number | string };
+}
+
+interface MessagePartLike {
+  type?: string;
+  text?: string;
+}
+
+interface MessageLike {
+  info?: MessageInfoLike;
+  parts?: MessagePartLike[];
+}
+
+const USER_STYLE_QUERY = "user communication response coding style preferences";
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function asMessageInfo(value: unknown): MessageInfoLike | null {
+  if (!isRecord(value)) return null;
+  const finish = value.finish;
+  const time = isRecord(value.time) ? value.time : undefined;
+  const created = time?.created;
+  return {
+    id: typeof value.id === "string" ? value.id : undefined,
+    role: typeof value.role === "string" ? value.role : undefined,
+    sessionID: typeof value.sessionID === "string" ? value.sessionID : undefined,
+    finish: typeof finish === "string" || typeof finish === "boolean" ? finish : undefined,
+    time: typeof created === "number" || typeof created === "string" ? { created } : undefined,
+  };
+}
+
+function asMessage(value: unknown): MessageLike | null {
+  if (!isRecord(value)) return null;
+  const info = asMessageInfo(value.info);
+  const parts = Array.isArray(value.parts)
+    ? value.parts.flatMap((part): MessagePartLike[] => {
+        if (!isRecord(part)) return [];
+        return [{
+          type: typeof part.type === "string" ? part.type : undefined,
+          text: typeof part.text === "string" ? part.text : undefined,
+        }];
+      })
+    : [];
+  return { info: info ?? undefined, parts };
+}
+
+function extractText(message: MessageLike): string {
+  return (message.parts ?? [])
+    .filter((part) => part.type === "text" && typeof part.text === "string")
+    .map((part) => part.text)
+    .join("\n")
+    .trim();
+}
+
 export const GraphitiPlugin: Plugin = async (ctx: PluginInput) => {
   const { directory } = ctx;
   const tags = getTags(directory);
   const injectedSessions = new Set<string>();
+  const savedTurns = new Set<string>();
   log("Plugin init", { directory, tags, configured: isConfigured() });
 
   if (!isConfigured()) {
     log("Plugin disabled - GRAPHITI_MCP_URL not set or server not reachable");
   }
 
-  const compactionHook = isConfigured() && ctx.client
+  const compactionHook = isConfigured() && ctx.client && CONFIG.enableCompaction
     ? createCompactionHook(ctx as CompactionContext, tags)
     : null;
+
+  async function saveFinishedTurn(info: MessageInfoLike): Promise<void> {
+    if (!CONFIG.autoSaveTurns || !ctx.client || !info.sessionID || !info.id) {
+      log("auto-save: skipped missing prerequisites", {
+        autoSaveTurns: CONFIG.autoSaveTurns,
+        hasClient: Boolean(ctx.client),
+        hasSessionID: Boolean(info.sessionID),
+        hasMessageID: Boolean(info.id),
+      });
+      return;
+    }
+
+    const turnKey = `${info.sessionID}:${info.id}`;
+    if (savedTurns.has(turnKey)) return;
+    savedTurns.add(turnKey);
+
+    try {
+      const response = await ctx.client.session.messages({
+        path: { id: info.sessionID, sessionID: info.sessionID },
+        query: { directory },
+      } as never);
+      const rawMessages = Array.isArray(response.data) ? response.data : response;
+      if (!Array.isArray(rawMessages)) {
+        log("auto-save: skipped invalid messages response", { sessionID: info.sessionID, messageID: info.id });
+        return;
+      }
+
+      const messages = rawMessages
+        .map(asMessage)
+        .filter((message): message is MessageLike => message !== null);
+      if (CONFIG.enableReplay) {
+        try {
+          saveReplayTimeline(buildReplayTimeline(info.sessionID, messages));
+        } catch (error) {
+          log("replay: failed to save timeline", { sessionID: info.sessionID, error: String(error) });
+        }
+      }
+      const assistantIndex = messages.findIndex((message) => message.info?.id === info.id);
+      if (assistantIndex < 0) {
+        log("auto-save: skipped assistant message not found", {
+          sessionID: info.sessionID,
+          messageID: info.id,
+          messagesCount: messages.length,
+        });
+        return;
+      }
+
+      const assistantMessage = messages[assistantIndex]!;
+      const userMessage = messages
+        .slice(0, assistantIndex)
+        .reverse()
+        .find((message) => message.info?.role === "user");
+      if (!userMessage) {
+        log("auto-save: skipped user message not found", { sessionID: info.sessionID, messageID: info.id });
+        return;
+      }
+
+      const userText = extractText(userMessage);
+      const assistantText = extractText(assistantMessage);
+      const rawContent = [
+        "Conversation turn:",
+        `User: ${userText}`,
+        `Assistant: ${assistantText}`,
+      ].join("\n\n");
+      const content = stripPrivateContent(rawContent).trim();
+      if (isFullyPrivate(rawContent) || content.length < 80) {
+        log("auto-save: skipped short/private turn", { sessionID: info.sessionID, messageID: info.id });
+        return;
+      }
+
+      const result = await graphitiClient.addMemory(
+        content,
+        tags.project,
+        { type: "conversation", name: `turn-${info.id}`, source: "message" }
+      );
+      if (result.success) {
+        log("auto-save: turn saved", { sessionID: info.sessionID, messageID: info.id, contentLength: content.length });
+      } else {
+        log("auto-save: failed to save turn", { sessionID: info.sessionID, messageID: info.id, error: result.error });
+      }
+    } catch (error) {
+      log("auto-save: ERROR", { sessionID: info.sessionID, messageID: info.id, error: String(error) });
+    }
+  }
 
   return {
     "chat.message": async (input, output) => {
@@ -86,7 +233,7 @@ export const GraphitiPlugin: Plugin = async (ctx: PluginInput) => {
         if (detectMemoryKeyword(userMessage)) {
           log("chat.message: memory keyword detected");
           const nudgePart: Part = {
-            id: `graphiti-nudge-${Date.now()}`,
+            id: `prt_${Date.now().toString(16)}${Math.random().toString(36).substring(2, 10)}`,
             sessionID: input.sessionID,
             messageID: output.message.id,
             type: "text",
@@ -106,15 +253,24 @@ export const GraphitiPlugin: Plugin = async (ctx: PluginInput) => {
             { content: userMessage, role: "user" },
           ];
 
-          const [profileResult, userMemoriesResult, projectMemoriesResult] = await Promise.all([
-            graphitiClient.getProfile(tags.user, userMessage),
+          const sharedGroupIds = CONFIG.sharedGroupIds.filter((groupId) => groupId.trim().length > 0);
+          const [profileResult, userMemoriesResult, projectMemoriesResult, ...sharedMemoriesResults] = await Promise.all([
+            graphitiClient.getProfile(tags.user, USER_STYLE_QUERY),
             graphitiClient.searchMemories(userMessage, tags.user, { messages: conversationMessages }),
             graphitiClient.searchMemories(userMessage, tags.project, { messages: conversationMessages }),
+            ...sharedGroupIds.map((groupId) =>
+              graphitiClient.searchMemories(userMessage, groupId, { messages: conversationMessages })
+            ),
           ]);
 
           const profile = profileResult.success ? profileResult : null;
           const userMemories = userMemoriesResult.success ? userMemoriesResult : { results: [] };
-          const projectMemories = projectMemoriesResult.success ? projectMemoriesResult : { results: [] };
+          const projectMemories = {
+            results: [
+              ...(projectMemoriesResult.success ? projectMemoriesResult.results : []),
+              ...sharedMemoriesResults.flatMap((result) => result.success ? result.results : []),
+            ],
+          };
 
           const memoryContext = formatContextForPrompt(
             profile,
@@ -124,7 +280,7 @@ export const GraphitiPlugin: Plugin = async (ctx: PluginInput) => {
 
           if (memoryContext) {
             const contextPart: Part = {
-              id: `graphiti-context-${Date.now()}`,
+              id: `prt_${Date.now().toString(16)}${Math.random().toString(36).substring(2, 10)}`,
               sessionID: input.sessionID,
               messageID: output.message.id,
               type: "text",
@@ -138,6 +294,7 @@ export const GraphitiPlugin: Plugin = async (ctx: PluginInput) => {
             log("chat.message: context injected", {
               duration,
               contextLength: memoryContext.length,
+              sharedGroupIds,
             });
           }
         }
@@ -153,7 +310,7 @@ export const GraphitiPlugin: Plugin = async (ctx: PluginInput) => {
           "Manage Graphiti temporal knowledge graph. Features: entity extraction, fact relationships with validity tracking, multiple data formats (text/json/message). Use 'search' for semantic+graph search, 'add' to store (auto-detects JSON), 'graph' to explore entity relationships.",
         args: {
           mode: tool.schema
-            .enum(["add", "search", "profile", "list", "forget", "graph", "help", "status"])
+            .enum(["add", "search", "profile", "list", "forget", "graph", "replay", "dream", "help", "status"])
             .optional(),
           content: tool.schema.string().optional(),
           query: tool.schema.string().optional(),
@@ -163,6 +320,7 @@ export const GraphitiPlugin: Plugin = async (ctx: PluginInput) => {
               "architecture",
               "error-solution",
               "preference",
+              "style",
               "learned-pattern",
               "conversation",
             ])
@@ -173,6 +331,7 @@ export const GraphitiPlugin: Plugin = async (ctx: PluginInput) => {
           source: tool.schema.enum(["text", "json", "message"]).optional(),
           entityTypes: tool.schema.array(tool.schema.string()).optional(),
           centerNodeId: tool.schema.string().optional(),
+          sessionId: tool.schema.string().optional(),
         },
         async execute(args: {
           mode?: string;
@@ -185,6 +344,7 @@ export const GraphitiPlugin: Plugin = async (ctx: PluginInput) => {
           source?: "text" | "json" | "message";
           entityTypes?: string[];
           centerNodeId?: string;
+          sessionId?: string;
         }) {
           if (!isConfigured()) {
             return JSON.stringify({
@@ -240,6 +400,16 @@ export const GraphitiPlugin: Plugin = async (ctx: PluginInput) => {
                       args: ["memoryId"],
                     },
                     {
+                      command: "replay",
+                      description: "Read a locally recorded, sanitized session timeline",
+                      args: ["sessionId"],
+                    },
+                    {
+                      command: "dream",
+                      description: "Read recent temporal facts and profile signals without mutating memory",
+                      args: ["scope?", "limit?"],
+                    },
+                    {
                       command: "status",
                       description: "Check Graphiti server status",
                       args: [],
@@ -257,6 +427,49 @@ export const GraphitiPlugin: Plugin = async (ctx: PluginInput) => {
               case "status": {
                 const result = await graphitiClient.getStatus();
                 return JSON.stringify(result);
+              }
+
+              case "replay": {
+                if (!args.sessionId) {
+                  return JSON.stringify({ success: false, error: "sessionId parameter is required for replay mode" });
+                }
+                try {
+                  const timeline = loadReplayTimeline(args.sessionId);
+                  return JSON.stringify(timeline
+                    ? { success: true, replay: timeline }
+                    : { success: false, error: "Replay not found for this session" });
+                } catch (error) {
+                  return JSON.stringify({
+                    success: false,
+                    error: error instanceof Error ? error.message : String(error),
+                  });
+                }
+              }
+
+              case "dream": {
+                const scope = args.scope || "project";
+                const groupId = scope === "user" ? tags.user : tags.project;
+                const [profileResult, memoriesResult] = await Promise.all([
+                  graphitiClient.getProfile(tags.user, USER_STYLE_QUERY),
+                  graphitiClient.listMemories(groupId, args.limit || CONFIG.maxProjectMemories),
+                ]);
+                if (!profileResult.success || !memoriesResult.success) {
+                  return JSON.stringify({
+                    success: false,
+                    error: "Unable to collect enough Graphiti context for reflection",
+                  });
+                }
+                return JSON.stringify({
+                  success: true,
+                  mode: "read-only-reflection",
+                  note: "Review candidates before saving a new preference or learned-pattern. This mode never mutates memory.",
+                  profile: profileResult.profile,
+                  recentEpisodes: (memoriesResult.memories || []).map((memory) => ({
+                    id: memory.id,
+                    content: memory.summary,
+                    createdAt: memory.createdAt,
+                  })),
+                });
               }
 
               case "add": {
@@ -572,6 +785,14 @@ export const GraphitiPlugin: Plugin = async (ctx: PluginInput) => {
     },
 
     event: async (input: { event: { type: string; properties?: unknown } }) => {
+      if (isConfigured() && input.event.type === "message.updated") {
+        const props = input.event.properties;
+        const info = isRecord(props) ? asMessageInfo(props.info) : null;
+        if (info?.role === "assistant" && info.finish) {
+          await saveFinishedTurn(info);
+        }
+      }
+
       if (compactionHook) {
         await compactionHook.event(input);
       }

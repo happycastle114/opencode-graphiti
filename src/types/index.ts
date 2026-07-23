@@ -5,6 +5,7 @@ export type MemoryType =
   | "architecture"
   | "error-solution"
   | "preference"
+  | "style"
   | "learned-pattern"
   | "conversation";
 
