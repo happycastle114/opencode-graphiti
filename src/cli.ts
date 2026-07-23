@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { homedir } from "node:os";
 import * as readline from "node:readline";
 import { stripJsoncComments } from "./services/jsonc.js";
+import { startDashboard } from "./services/dashboard.js";
 
 const OPENCODE_CONFIG_DIR = join(homedir(), ".config", "opencode");
 const OPENCODE_COMMAND_DIR = join(OPENCODE_CONFIG_DIR, "command");
@@ -384,6 +385,9 @@ function createGraphitiConfig(): boolean {
   "injectProfile": true,
   "injectProjectMemories": true,
   "injectRelevantMemories": true,
+  "autoSaveTurns": true,
+  "enableReplay": true,
+  "enableCompaction": false,
   
   // Entity types to search for preferences/context
   "entityTypes": ["Preference", "Requirement", "Procedure", "Topic"]
@@ -562,17 +566,46 @@ Commands:
     --database <backend>     Choose graph database: falkordb (default) or neo4j
     --disable-context-recovery   Disable Oh My OpenCode's context-window-limit-recovery hook (use with --no-tui)
   setup                      (Deprecated) Alias for install, accepts same flags
+  dashboard                  Start a local read-only memory dashboard
+    --port <port>             Loopback port (default: 4318)
+    --directory <path>        Project directory used for memory scoping (default: current directory)
 
 Examples:
   bunx opencode-graphiti@latest install
   bunx opencode-graphiti@latest install --database neo4j
   bunx opencode-graphiti@latest install --no-tui --database neo4j
   bunx opencode-graphiti@latest install --no-tui --disable-context-recovery
+  opencode-graphiti dashboard --port 4318
 
 Requirements:
   - Graphiti MCP Server running (see setup instructions during install)
   - No API key needed - Graphiti server handles LLM/embeddings internally
 `);
+}
+
+function readFlagValue(args: string[], flag: string): string | undefined {
+  const index = args.indexOf(flag);
+  if (index === -1) return undefined;
+  const value = args[index + 1];
+  if (!value || value.startsWith("-")) {
+    throw new Error(`${flag} requires a value`);
+  }
+  return value;
+}
+
+async function runDashboard(args: string[]): Promise<void> {
+  const portValue = readFlagValue(args, "--port");
+  const port = portValue ? Number(portValue) : 4318;
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    throw new Error("--port must be an integer from 1 to 65535");
+  }
+
+  const directory = readFlagValue(args, "--directory") ?? process.cwd();
+  const dashboard = await startDashboard({ directory, port });
+  console.log(`Graphiti dashboard listening at ${dashboard.url}`);
+  console.log("The dashboard is bound to 127.0.0.1 and does not expose mutation controls.");
+
+  await new Promise<void>(() => {});
 }
 
 const args = process.argv.slice(2);
@@ -595,6 +628,11 @@ if (args[0] === "install") {
   // Backwards compatibility
   console.log("Note: 'setup' is deprecated. Use 'install' instead.\n");
   runInstall(args);
+} else if (args[0] === "dashboard") {
+  runDashboard(args).catch((error) => {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exit(1);
+  });
 } else {
   console.error(`Unknown command: ${args[0]}`);
   printHelp();
