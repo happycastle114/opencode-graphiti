@@ -1,6 +1,6 @@
 {
   "name": "@happycastle/opencode-graphiti",
-  "version": "0.5.2",
+  "version": "0.5.3",
   "description": "OpenCode plugin that gives coding agents persistent memory using Graphiti temporal knowledge graph",
   "type": "module",
   "main": "dist/index.js",
