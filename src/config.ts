@@ -26,6 +26,8 @@ interface GraphitiConfig {
   injectProjectMemories?: boolean;
   injectRelevantMemories?: boolean;
   autoSaveTurns?: boolean;
+  autoSavePreferences?: boolean;
+  autoSaveSessionDigests?: boolean;
   enableReplay?: boolean;
   enableCompaction?: boolean;
   sharedGroupIds?: string[];
@@ -45,6 +47,8 @@ const DEFAULTS: Required<Omit<GraphitiConfig, "userGroupId">> = {
   injectProjectMemories: true,
   injectRelevantMemories: true,
   autoSaveTurns: true,
+  autoSavePreferences: true,
+  autoSaveSessionDigests: true,
   enableReplay: true,
   enableCompaction: false,
   sharedGroupIds: [],
@@ -158,6 +162,8 @@ function createHotReloadConfig() {
     get injectProjectMemories() { return getReloadableValue("injectProjectMemories") ?? DEFAULTS.injectProjectMemories; },
     get injectRelevantMemories() { return getReloadableValue("injectRelevantMemories") ?? DEFAULTS.injectRelevantMemories; },
     get autoSaveTurns() { return getReloadableValue("autoSaveTurns") ?? DEFAULTS.autoSaveTurns; },
+    get autoSavePreferences() { return getReloadableValue("autoSavePreferences") ?? DEFAULTS.autoSavePreferences; },
+    get autoSaveSessionDigests() { return getReloadableValue("autoSaveSessionDigests") ?? DEFAULTS.autoSaveSessionDigests; },
     get enableReplay() { return getReloadableValue("enableReplay") ?? DEFAULTS.enableReplay; },
     get enableCompaction() { return getReloadableValue("enableCompaction") ?? DEFAULTS.enableCompaction; },
     get sharedGroupIds() { return getReloadableValue("sharedGroupIds") ?? DEFAULTS.sharedGroupIds; },

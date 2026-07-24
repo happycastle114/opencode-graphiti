@@ -9,6 +9,8 @@ import { getTags } from "./services/tags.js";
 import { stripPrivateContent, isFullyPrivate } from "./services/privacy.js";
 import { createCompactionHook, type CompactionContext } from "./services/compaction.js";
 import { buildReplayTimeline, loadReplayTimeline, saveReplayTimeline } from "./services/replay.js";
+import { buildSessionDigest } from "./services/memory-enhancement.js";
+import { createSessionDigestRefresher, createSessionDigestSaver, saveExplicitProfileMemory } from "./services/memory-capture.js";
 
 import { isConfigured, CONFIG, USE_REST_API } from "./config.js";
 import { log } from "./services/logger.js";
@@ -107,6 +109,8 @@ export const GraphitiPlugin: Plugin = async (ctx: PluginInput) => {
   const tags = getTags(directory);
   const injectedSessions = new Set<string>();
   const savedTurns = new Set<string>();
+  const sessionDigestSaver = createSessionDigestSaver(graphitiClient, tags);
+  const sessionDigestRefresher = createSessionDigestRefresher(sessionDigestSaver);
   log("Plugin init", { directory, tags, configured: isConfigured() });
 
   if (!isConfigured()) {
@@ -175,6 +179,16 @@ export const GraphitiPlugin: Plugin = async (ctx: PluginInput) => {
 
       const userText = extractText(userMessage);
       const assistantText = extractText(assistantMessage);
+      if (CONFIG.autoSavePreferences) {
+        try {
+          const savedProfileMemory = await saveExplicitProfileMemory(graphitiClient, tags, userText, info.id);
+          if (savedProfileMemory) {
+            log("auto-save: explicit profile memory saved", { sessionID: info.sessionID, messageID: info.id });
+          }
+        } catch (error) {
+          log("auto-save: failed to save explicit profile memory", { sessionID: info.sessionID, messageID: info.id, error: String(error) });
+        }
+      }
       const rawContent = [
         "Conversation turn:",
         `User: ${userText}`,
@@ -198,6 +212,29 @@ export const GraphitiPlugin: Plugin = async (ctx: PluginInput) => {
       }
     } catch (error) {
       log("auto-save: ERROR", { sessionID: info.sessionID, messageID: info.id, error: String(error) });
+    }
+  }
+
+  async function saveSessionDigest(sessionID: string): Promise<void> {
+    if (!CONFIG.autoSaveSessionDigests || !ctx.client) return;
+
+    try {
+      const saved = await sessionDigestRefresher.refresh(sessionID, async () => {
+        const response = await ctx.client!.session.messages({
+          path: { id: sessionID, sessionID },
+          query: { directory },
+        } as never);
+        const rawMessages = Array.isArray(response.data) ? response.data : response;
+        if (!Array.isArray(rawMessages)) return null;
+
+        const messages = rawMessages
+          .map(asMessage)
+          .filter((message): message is MessageLike => message !== null);
+        return buildSessionDigest(buildReplayTimeline(sessionID, messages));
+      });
+      if (saved) log("auto-save: session digest saved", { sessionID });
+    } catch (error) {
+      log("auto-save: failed to save session digest", { sessionID, error: String(error) });
     }
   }
 
@@ -785,12 +822,22 @@ export const GraphitiPlugin: Plugin = async (ctx: PluginInput) => {
     },
 
     event: async (input: { event: { type: string; properties?: unknown } }) => {
+      const props = isRecord(input.event.properties) ? input.event.properties : undefined;
       if (isConfigured() && input.event.type === "message.updated") {
-        const props = input.event.properties;
-        const info = isRecord(props) ? asMessageInfo(props.info) : null;
+        const info = asMessageInfo(props?.info);
         if (info?.role === "assistant" && info.finish) {
           await saveFinishedTurn(info);
         }
+      }
+
+      if (isConfigured() && input.event.type === "session.idle") {
+        const sessionID = typeof props?.sessionID === "string" ? props.sessionID : undefined;
+        if (sessionID) await saveSessionDigest(sessionID);
+      }
+
+      if (input.event.type === "session.deleted") {
+        const sessionInfo = isRecord(props?.info) ? props.info : undefined;
+        if (typeof sessionInfo?.id === "string") sessionDigestRefresher.forget(sessionInfo.id);
       }
 
       if (compactionHook) {
