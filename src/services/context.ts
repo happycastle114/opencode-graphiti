@@ -22,6 +22,24 @@ function formatTemporalTag(mem: MemoryResult): string {
   return "";
 }
 
+function memoryTimestamp(mem: MemoryResult): number {
+  const value = mem.validAt ?? mem.createdAt;
+  const timestamp = value ? Date.parse(value) : Number.NaN;
+  return Number.isNaN(timestamp) ? 0 : timestamp;
+}
+
+export function prioritizeMemories(memories: MemoryResult[]): MemoryResult[] {
+  return [...memories].sort((left, right) => {
+    const similarityDifference = (right.similarity ?? -1) - (left.similarity ?? -1);
+    if (similarityDifference !== 0) return similarityDifference;
+
+    const recencyDifference = memoryTimestamp(right) - memoryTimestamp(left);
+    if (recencyDifference !== 0) return recencyDifference;
+
+    return left.id.localeCompare(right.id);
+  });
+}
+
 function formatMemoryLine(mem: MemoryResult): string {
   const content = mem.memory || "";
   const typeTag = mem.type ? `[${mem.type}]` : "";
@@ -44,7 +62,8 @@ export function formatContextForPrompt(
   const parts: string[] = ["[GRAPHITI MEMORY - Temporal Knowledge Graph]"];
 
   if (CONFIG.injectProfile && profile?.profile) {
-    const { static: staticFacts, dynamic: dynamicFacts } = profile.profile;
+    const staticFacts = [...profile.profile.static].sort((left, right) => left.localeCompare(right));
+    const dynamicFacts = [...profile.profile.dynamic].sort((left, right) => left.localeCompare(right));
 
     if (staticFacts.length > 0) {
       parts.push("\nUser Preferences (stable):");
@@ -61,18 +80,18 @@ export function formatContextForPrompt(
     }
   }
 
-  const projectResults = projectMemories.results || [];
-  if (CONFIG.injectProjectMemories && projectResults.length > 0) {
-    parts.push("\nProject Knowledge (entities & facts):");
-    projectResults.forEach((mem) => {
+  const userResults = prioritizeMemories(userMemories.results || []);
+  if (CONFIG.injectRelevantMemories && userResults.length > 0) {
+    parts.push("\nUser Memory Priorities:");
+    userResults.forEach((mem) => {
       parts.push(formatMemoryLine(mem));
     });
   }
 
-  const userResults = userMemories.results || [];
-  if (CONFIG.injectRelevantMemories && userResults.length > 0) {
-    parts.push("\nRelevant Memories:");
-    userResults.forEach((mem) => {
+  const projectResults = prioritizeMemories(projectMemories.results || []);
+  if (CONFIG.injectProjectMemories && projectResults.length > 0) {
+    parts.push("\nProject Knowledge (entities & facts):");
+    projectResults.forEach((mem) => {
       parts.push(formatMemoryLine(mem));
     });
   }
