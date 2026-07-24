@@ -386,6 +386,8 @@ function createGraphitiConfig(): boolean {
   "injectProjectMemories": true,
   "injectRelevantMemories": true,
   "autoSaveTurns": true,
+  "autoSavePreferences": true,
+  "autoSaveSessionDigests": true,
   "enableReplay": true,
   "enableCompaction": false,
   

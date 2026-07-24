@@ -109,6 +109,8 @@ Create `~/.config/opencode/graphiti.jsonc`:
 
   // Session capture and replay
   "autoSaveTurns": true,
+  "autoSavePreferences": true,
+  "autoSaveSessionDigests": true,
   "enableReplay": true,
   "enableCompaction": false
 }
