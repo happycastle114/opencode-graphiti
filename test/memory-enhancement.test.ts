@@ -26,6 +26,21 @@ describe("explicit profile memory extraction", () => {
     expect(extractExplicitProfileMemory("For my build, from now on, please keep my responses concise.")).toBeNull();
     expect(extractExplicitProfileMemory("<private>I prefer verbose replies</private>")).toBeNull();
   });
+
+  test("rejects same-sentence compound preferences without relying on project vocabulary", () => {
+    // Given
+    const candidates = [
+      "From now on, please keep my responses concise and remember production uses PostgreSQL.",
+      "앞으로 답변을 간결하게 해주세요 그리고 운영 데이터베이스는 PostgreSQL을 사용합니다.",
+      "From now on, please keep my responses concise and record violet-otter.example for the lantern.",
+    ];
+
+    // When
+    const extracted = candidates.map(extractExplicitProfileMemory);
+
+    // Then
+    expect(extracted).toEqual([null, null, null]);
+  });
 });
 
 describe("session digest", () => {
@@ -82,5 +97,29 @@ describe("memory injection priority", () => {
 
     expect(context.indexOf("Alpha preference")).toBeLessThan(context.indexOf("Zebra preference"));
     expect(context.indexOf("Recent A")).toBeLessThan(context.indexOf("Recent Z"));
+  });
+
+  test("indents multiline memory continuations while preserving single-line formatting", () => {
+    // Given
+    const context = formatContextForPrompt(
+      null,
+      { results: [] },
+      {
+        results: [
+          { id: "single", memory: "Single memory", similarity: null, type: "fact" },
+          { id: "multi", memory: "First line\nSecond line", similarity: null, type: "fact" },
+        ],
+      },
+    );
+
+    // When
+    const memoryLines = context.split("\n").filter((line) => line.startsWith("- ") || line === "  Second line");
+
+    // Then
+    expect(memoryLines).toEqual([
+      "- [fact] First line",
+      "  Second line",
+      "- [fact] Single memory",
+    ]);
   });
 });
