@@ -33,6 +33,20 @@ describe("replay timeline", () => {
     }
   });
 
+  test("excludes synthetic message parts from captured replay content", () => {
+    const timeline = buildReplayTimeline("session-42", [
+      {
+        info: { id: "user-1", role: "user", sessionID: "session-42", time: { created: 100 } },
+        parts: [
+          { type: "text", text: "Injected Graphiti context", synthetic: true },
+          { type: "text", text: "Please explain the failure." },
+        ],
+      },
+    ]);
+
+    expect(timeline.events.map((event) => event.content)).toEqual(["Please explain the failure."]);
+  });
+
   test("rejects a path-like session id", () => {
     expect(() => buildReplayTimeline("../escape", [])).toThrow("Invalid replay session id");
   });
