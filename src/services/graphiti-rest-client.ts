@@ -9,6 +9,7 @@ import { CONFIG, GRAPHITI_REST_URL } from "../config.js";
 import { assertNonEmptyGroupIds } from "./group-ids.js";
 import { log } from "./logger.js";
 import { redactForLog } from "./privacy.js";
+import { profileCache } from "./profile-cache.js";
 import type {
   MemoryType,
   EpisodeSource,
@@ -175,6 +176,16 @@ export class GraphitiRestClient {
       );
 
       log("graphiti.addMemory: success", { message: result.message });
+      const isProfileMemory = metadata?.type === "preference" || metadata?.type === "style";
+      if ((metadata?.name?.startsWith("profile-") || groupId.includes("_user_")) && isProfileMemory) {
+        try {
+          await profileCache.save(groupId, content);
+        } catch (cacheError) {
+          log("graphiti.addMemory: profile cache write failed", {
+            error: cacheError instanceof Error ? cacheError.message : String(cacheError),
+          });
+        }
+      }
       return { success: true as const, message: result.message };
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
@@ -617,16 +628,18 @@ export class GraphitiRestClient {
         if (content) profileFacts.add(content);
       }
       const staticFacts = [...profileFacts].sort((left, right) => left.localeCompare(right));
+      const cachedFacts = profileCache.read(userGroupId);
+      const mergedFacts = [...new Set([...cachedFacts, ...staticFacts])].slice(0, CONFIG.maxProfileItems);
 
       log("graphiti.getProfile: success", {
-        staticCount: staticFacts.length,
+        staticCount: mergedFacts.length,
         dynamicCount: 0,
       });
 
       return {
         success: true as const,
         profile: {
-          static: staticFacts.slice(0, CONFIG.maxProfileItems),
+          static: mergedFacts,
           dynamic: [],
         },
       };
