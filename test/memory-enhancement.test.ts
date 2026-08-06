@@ -13,6 +13,17 @@ describe("explicit profile memory extraction", () => {
     });
   });
 
+  test("captures direct language preferences without requiring a durability keyword", () => {
+    expect(extractExplicitProfileMemory("한국어로 답변해줘.")).toEqual({
+      type: "style",
+      content: "한국어로 답변해줘.",
+    });
+    expect(extractExplicitProfileMemory("Please respond in Korean.")).toEqual({
+      type: "style",
+      content: "Please respond in Korean.",
+    });
+  });
+
   test("does not infer a profile from ordinary or fully private conversation", () => {
     expect(extractExplicitProfileMemory("The build completed successfully.")).toBeNull();
     expect(extractExplicitProfileMemory("I want to know why this build failed.")).toBeNull();
