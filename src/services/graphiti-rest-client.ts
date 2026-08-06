@@ -6,13 +6,16 @@
  */
 
 import { CONFIG, GRAPHITI_REST_URL } from "../config.js";
+import { assertNonEmptyGroupIds } from "./group-ids.js";
 import { log } from "./logger.js";
+import { redactForLog } from "./privacy.js";
 import type {
   MemoryType,
   EpisodeSource,
   GraphitiNodeResult,
   GraphitiFactResult,
   GraphitiEpisodeResult,
+  MemoryResult,
 } from "../types/index.js";
 
 const TIMEOUT_MS = 30000;
@@ -44,7 +47,7 @@ interface AddMessagesRequest {
 
 interface SearchQuery {
   query: string;
-  group_ids?: string[] | null;
+  group_ids: string[];
   max_facts?: number;
 }
 
@@ -144,6 +147,7 @@ export class GraphitiRestClient {
       [key: string]: unknown;
     }
   ) {
+    assertNonEmptyGroupIds([groupId]);
     log("graphiti.addMemory: start", { groupId, contentLength: content.length });
     try {
       const message: Message = {
@@ -187,11 +191,12 @@ export class GraphitiRestClient {
     groupIds: string[],
     options?: { maxFacts?: number }
   ) {
-    log("graphiti.searchFacts: start", { groupIds, query: query.slice(0, 50) });
+    assertNonEmptyGroupIds(groupIds);
+    log("graphiti.searchFacts: start", { groupIds, query: redactForLog(query) });
     try {
       const searchQuery: SearchQuery = {
         query,
-        group_ids: groupIds.length > 0 ? groupIds : null,
+        group_ids: groupIds,
         max_facts: options?.maxFacts || CONFIG.maxMemories,
       };
 
@@ -210,7 +215,9 @@ export class GraphitiRestClient {
         created_at: f.created_at,
         valid_at: f.valid_at,
         invalid_at: f.invalid_at,
+        expired_at: f.expired_at,
         group_id: f.group_id,
+        episodes: f.episodes,
       }));
 
       log("graphiti.searchFacts: success", { count: facts.length });
@@ -235,6 +242,7 @@ export class GraphitiRestClient {
     messages: Array<{ content: string; role: "user" | "assistant" | "system" }>,
     options?: { maxFacts?: number; centerNodeUuid?: string }
   ) {
+    assertNonEmptyGroupIds([groupId]);
     log("graphiti.getMemory: start", { groupId, messageCount: messages.length });
     try {
       const request: GetMemoryRequest = {
@@ -264,7 +272,9 @@ export class GraphitiRestClient {
         created_at: f.created_at,
         valid_at: f.valid_at,
         invalid_at: f.invalid_at,
+        expired_at: f.expired_at,
         group_id: f.group_id,
+        episodes: f.episodes,
       }));
 
       log("graphiti.getMemory: success", { count: facts.length });
@@ -284,14 +294,11 @@ export class GraphitiRestClient {
    * Get episodes for a group
    */
   async getEpisodes(groupIds: string[], maxEpisodes?: number) {
+    assertNonEmptyGroupIds(groupIds);
     log("graphiti.getEpisodes: start", { groupIds, maxEpisodes });
     try {
       // REST API only supports single group_id
       const groupId = groupIds[0];
-      if (!groupId) {
-        return { success: true as const, episodes: [], total: 0 };
-      }
-
       const limit = maxEpisodes || CONFIG.maxProjectMemories;
       const result = await this.request<RESTEpisodeResult[]>(
         "GET",
@@ -306,6 +313,8 @@ export class GraphitiRestClient {
         source: ep.source,
         source_description: ep.source_description,
         group_id: ep.group_id,
+        valid_at: ep.valid_at,
+        entity_edges: ep.entity_edges,
       }));
 
       log("graphiti.getEpisodes: success", { count: episodes.length });
@@ -360,7 +369,9 @@ export class GraphitiRestClient {
         created_at: result.created_at,
         valid_at: result.valid_at,
         invalid_at: result.invalid_at,
+        expired_at: result.expired_at,
         group_id: result.group_id,
+        episodes: result.episodes,
       };
 
       log("graphiti.getEntityEdge: success", { uuid });
@@ -400,6 +411,7 @@ export class GraphitiRestClient {
     name: string,
     summary?: string
   ) {
+    assertNonEmptyGroupIds([groupId]);
     log("graphiti.addEntityNode: start", { uuid, groupId, name });
     try {
       const request: AddEntityNodeRequest = {
@@ -427,6 +439,7 @@ export class GraphitiRestClient {
    * Delete a group (all data for a group_id)
    */
   async deleteGroup(groupId: string) {
+    assertNonEmptyGroupIds([groupId]);
     log("graphiti.deleteGroup: start", { groupId });
     try {
       const result = await this.request<{ message: string }>(
@@ -446,11 +459,14 @@ export class GraphitiRestClient {
    * Clear all data
    */
   async clearGraph(groupIds?: string[]) {
+    if (groupIds !== undefined) {
+      assertNonEmptyGroupIds(groupIds);
+    }
     log("graphiti.clearGraph: start", { groupIds });
     try {
       // REST API /clear doesn't support group filtering
       // If groupIds provided, delete each group individually
-      if (groupIds && groupIds.length > 0) {
+      if (groupIds) {
         for (const groupId of groupIds) {
           await this.deleteGroup(groupId);
         }
@@ -506,6 +522,7 @@ export class GraphitiRestClient {
       messages?: Array<{ content: string; role: "user" | "assistant" | "system" }>;
     }
   ) {
+    assertNonEmptyGroupIds([groupId]);
     log("graphiti.searchMemories: start", { groupId, hasMessages: !!(options?.messages?.length) });
     try {
       let factsResult: { facts: GraphitiFactResult[]; success: boolean };
@@ -529,13 +546,15 @@ export class GraphitiRestClient {
         (fact) => !fact.invalid_at
       );
 
-      const results = validFacts.map((fact) => ({
+      const results: MemoryResult[] = validFacts.map((fact) => ({
         id: fact.uuid || `fact-${Date.now()}`,
         memory: fact.fact || fact.name || "",
         similarity: null as number | null,
         type: "fact" as const,
+        groupId: fact.group_id,
         createdAt: fact.created_at,
         validAt: fact.valid_at,
+        invalidAt: fact.invalid_at,
         sourceNode: fact.source_node_uuid,
         targetNode: fact.target_node_uuid,
       }));
@@ -574,6 +593,7 @@ export class GraphitiRestClient {
    * Note: REST API doesn't have dedicated profile endpoint
    */
   async getProfile(userGroupId: string, query?: string) {
+    assertNonEmptyGroupIds([userGroupId]);
     log("graphiti.getProfile: start", { userGroupId });
     try {
       const searchQuery = query || "user preferences settings configuration";
@@ -581,30 +601,33 @@ export class GraphitiRestClient {
       const factsResult = await this.searchFacts(searchQuery, [userGroupId], {
         maxFacts: CONFIG.maxProfileItems * 2,
       });
+      if (!factsResult.success) {
+        return {
+          success: false as const,
+          error: factsResult.error || "Failed to search profile facts",
+          profile: null,
+        };
+      }
 
-      const staticFacts: string[] = [];
-      const dynamicFacts: string[] = [];
+      const profileFacts = new Set<string>();
 
       for (const fact of factsResult.facts || []) {
-        const content = fact.fact || fact.name || "";
-        // Simple heuristic: facts without invalid_at are more "static"
-        if (!fact.invalid_at) {
-          staticFacts.push(content);
-        } else {
-          dynamicFacts.push(content);
-        }
+        if (fact.invalid_at || fact.expired_at) continue;
+        const content = (fact.fact || fact.name || "").trim();
+        if (content) profileFacts.add(content);
       }
+      const staticFacts = [...profileFacts].sort((left, right) => left.localeCompare(right));
 
       log("graphiti.getProfile: success", {
         staticCount: staticFacts.length,
-        dynamicCount: dynamicFacts.length,
+        dynamicCount: 0,
       });
 
       return {
         success: true as const,
         profile: {
           static: staticFacts.slice(0, CONFIG.maxProfileItems),
-          dynamic: dynamicFacts.slice(0, CONFIG.maxProfileItems),
+          dynamic: [],
         },
       };
     } catch (error) {
@@ -618,6 +641,7 @@ export class GraphitiRestClient {
    * List memories (episodes) for a group
    */
   async listMemories(groupId: string, limit = 20) {
+    assertNonEmptyGroupIds([groupId]);
     log("graphiti.listMemories: start", { groupId, limit });
     try {
       const result = await this.getEpisodes([groupId], limit);
@@ -667,10 +691,11 @@ export class GraphitiRestClient {
    * Returns empty results
    */
   async searchNodes(
-    query: string,
+    _query: string,
     groupIds: string[],
-    options?: { maxNodes?: number; entityTypes?: string[] }
+    _options?: { maxNodes?: number; entityTypes?: string[] }
   ) {
+    assertNonEmptyGroupIds(groupIds);
     log("graphiti.searchNodes: REST API does not support node search", { groupIds });
     return {
       success: true as const,

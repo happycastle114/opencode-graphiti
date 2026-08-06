@@ -41,13 +41,14 @@ export function prioritizeMemories(memories: MemoryResult[]): MemoryResult[] {
 }
 
 function formatMemoryLine(mem: MemoryResult): string {
-  const content = mem.memory || "";
+  const content = (mem.memory || "").replace(/\r?\n/g, "\n  ");
   const typeTag = mem.type ? `[${mem.type}]` : "";
   const temporalTag = formatTemporalTag(mem);
   const labelTag = mem.labels?.length ? `[${mem.labels.join(",")}]` : "";
   const similarityTag = mem.similarity != null ? `[${Math.round(mem.similarity * 100)}%]` : "";
+  const groupTag = mem.groupId ? `[${mem.groupId}]` : "";
   
-  const tags = [typeTag, labelTag, temporalTag, similarityTag]
+  const tags = [typeTag, labelTag, groupTag, temporalTag, similarityTag]
     .filter(Boolean)
     .join("");
   

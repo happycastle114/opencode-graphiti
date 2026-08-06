@@ -42,7 +42,9 @@ export interface GraphitiFactResult {
   created_at?: string;
   valid_at?: string;
   invalid_at?: string;
+  expired_at?: string;
   group_id?: string;
+  episodes?: readonly string[];
 }
 
 // Graphiti Episode Result from get_episodes
@@ -54,6 +56,8 @@ export interface GraphitiEpisodeResult {
   source?: string;
   source_description?: string;
   group_id: string;
+  valid_at?: string;
+  entity_edges?: readonly string[];
 }
 
 // Graphiti Episode Source types
@@ -68,6 +72,8 @@ export interface MemoryResult {
   type?: "node" | "fact" | "episode";
   labels?: string[];
   metadata?: Record<string, unknown>;
+  /** Originating group — identifies which project/user scope this memory belongs to. */
+  groupId?: string;
   // Temporal metadata (Graphiti-specific)
   createdAt?: string;
   validAt?: string;

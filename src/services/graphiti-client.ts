@@ -1,11 +1,14 @@
-import { CONFIG, GRAPHITI_MCP_URL, isConfigured } from "../config.js";
+import { CONFIG, GRAPHITI_MCP_URL } from "../config.js";
+import { assertNonEmptyGroupIds } from "./group-ids.js";
 import { log } from "./logger.js";
+import { redactForLog } from "./privacy.js";
 import type {
   MemoryType,
   EpisodeSource,
   GraphitiNodeResult,
   GraphitiFactResult,
   GraphitiEpisodeResult,
+  MemoryResult,
 } from "../types/index.js";
 
 const TIMEOUT_MS = 30000;
@@ -209,6 +212,7 @@ export class GraphitiClient {
       [key: string]: unknown 
     }
   ) {
+    assertNonEmptyGroupIds([groupId]);
     log("graphiti.addMemory: start", { groupId, contentLength: content.length });
     try {
       const source = metadata?.source || this.inferSource(content);
@@ -255,7 +259,8 @@ export class GraphitiClient {
     groupIds: string[],
     options?: { maxNodes?: number; entityTypes?: string[] }
   ) {
-    log("graphiti.searchNodes: start", { groupIds, query: query.slice(0, 50) });
+    assertNonEmptyGroupIds(groupIds);
+    log("graphiti.searchNodes: start", { groupIds, query: redactForLog(query) });
     try {
       const result = await this.callMCPTool<{ nodes: GraphitiNodeResult[] }>(
         "search_nodes",
@@ -284,7 +289,8 @@ export class GraphitiClient {
     groupIds: string[],
     options?: { maxFacts?: number; centerNodeUuid?: string }
   ) {
-    log("graphiti.searchFacts: start", { groupIds, query: query.slice(0, 50) });
+    assertNonEmptyGroupIds(groupIds);
+    log("graphiti.searchFacts: start", { groupIds, query: redactForLog(query) });
     try {
       const result = await this.callMCPTool<{ facts: GraphitiFactResult[] }>(
         "search_memory_facts",
@@ -295,11 +301,24 @@ export class GraphitiClient {
           center_node_uuid: options?.centerNodeUuid,
         }
       );
-      log("graphiti.searchFacts: success", { count: result.facts?.length || 0 });
+      const facts: GraphitiFactResult[] = (result.facts || []).map((fact) => ({
+        uuid: fact.uuid,
+        name: fact.name,
+        fact: fact.fact,
+        source_node_uuid: fact.source_node_uuid,
+        target_node_uuid: fact.target_node_uuid,
+        created_at: fact.created_at,
+        valid_at: fact.valid_at,
+        invalid_at: fact.invalid_at,
+        expired_at: fact.expired_at,
+        group_id: fact.group_id,
+        episodes: fact.episodes,
+      }));
+      log("graphiti.searchFacts: success", { count: facts.length });
       return {
         success: true as const,
-        facts: result.facts || [],
-        total: result.facts?.length || 0,
+        facts,
+        total: facts.length,
       };
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
@@ -309,6 +328,7 @@ export class GraphitiClient {
   }
 
   async getEpisodes(groupIds: string[], maxEpisodes?: number) {
+    assertNonEmptyGroupIds(groupIds);
     log("graphiti.getEpisodes: start", { groupIds, maxEpisodes });
     try {
       const result = await this.callMCPTool<{ episodes: GraphitiEpisodeResult[] }>(
@@ -367,8 +387,21 @@ export class GraphitiClient {
       const result = await this.callMCPTool<GraphitiFactResult>("get_entity_edge", {
         uuid,
       });
+      const edge: GraphitiFactResult = {
+        uuid: result.uuid,
+        name: result.name,
+        fact: result.fact,
+        source_node_uuid: result.source_node_uuid,
+        target_node_uuid: result.target_node_uuid,
+        created_at: result.created_at,
+        valid_at: result.valid_at,
+        invalid_at: result.invalid_at,
+        expired_at: result.expired_at,
+        group_id: result.group_id,
+        episodes: result.episodes,
+      };
       log("graphiti.getEntityEdge: success", { uuid });
-      return { success: true as const, edge: result };
+      return { success: true as const, edge };
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
       log("graphiti.getEntityEdge: error", { uuid, error: errorMessage });
@@ -377,6 +410,9 @@ export class GraphitiClient {
   }
 
   async clearGraph(groupIds?: string[]) {
+    if (groupIds !== undefined) {
+      assertNonEmptyGroupIds(groupIds);
+    }
     log("graphiti.clearGraph: start", { groupIds });
     try {
       const result = await this.callMCPTool<{ message: string }>("clear_graph", {
@@ -412,6 +448,7 @@ export class GraphitiClient {
     entityTypes?: string[];
     messages?: Array<{ content: string; role: "user" | "assistant" | "system" }>;
   }) {
+    assertNonEmptyGroupIds([groupId]);
     log("graphiti.searchMemories: start", { groupId });
     try {
       const [nodesResult, factsResult] = await Promise.all([
@@ -427,13 +464,14 @@ export class GraphitiClient {
 
       const validFacts = (factsResult.facts || []).filter((fact) => !fact.invalid_at);
 
-      const results = [
+      const results: MemoryResult[] = [
         ...(nodesResult.nodes || []).map((node) => ({
           id: node.uuid,
           memory: node.summary || node.name,
           similarity: null as number | null,
           type: "node" as const,
           labels: node.labels,
+          groupId: node.group_id,
           createdAt: node.created_at,
         })),
         ...validFacts.map((fact) => ({
@@ -441,8 +479,10 @@ export class GraphitiClient {
           memory: this.formatFactWithRelationship(fact),
           similarity: null as number | null,
           type: "fact" as const,
+          groupId: fact.group_id,
           createdAt: fact.created_at,
           validAt: fact.valid_at,
+          invalidAt: fact.invalid_at,
           sourceNode: fact.source_node_uuid,
           targetNode: fact.target_node_uuid,
         })),
@@ -476,6 +516,7 @@ export class GraphitiClient {
   }
 
   async getProfile(userGroupId: string, query?: string) {
+    assertNonEmptyGroupIds([userGroupId]);
     log("graphiti.getProfile: start", { userGroupId });
     try {
       const searchQuery = query || "user preferences settings configuration";
@@ -518,6 +559,7 @@ export class GraphitiClient {
   }
 
   async listMemories(groupId: string, limit = 20) {
+    assertNonEmptyGroupIds([groupId]);
     log("graphiti.listMemories: start", { groupId, limit });
     try {
       const result = await this.getEpisodes([groupId], limit);

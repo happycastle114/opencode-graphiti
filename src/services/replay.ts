@@ -1,20 +1,14 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { getText, type MessageLike } from "./message-parts.js";
 import { isFullyPrivate, stripPrivateContent } from "./privacy.js";
+import { sanitizeTextForStorage } from "./storage-sanitizer.js";
 
 const DEFAULT_REPLAY_DIRECTORY = join(homedir(), ".opencode-graphiti", "replays");
 const SESSION_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
 
-export interface ReplayMessage {
-  info?: {
-    id?: string;
-    role?: string;
-    sessionID?: string;
-    time?: { created?: number | string };
-  };
-  parts?: Array<{ type?: string; text?: string }>;
-}
+export type ReplayMessage = MessageLike;
 
 export interface ReplayEvent {
   id: string;
@@ -48,14 +42,6 @@ function toIsoTimestamp(value: number | string | undefined): string {
   return new Date(0).toISOString();
 }
 
-function getText(parts: ReplayMessage["parts"]): string {
-  return (parts ?? [])
-    .filter((part) => part.type === "text" && typeof part.text === "string")
-    .map((part) => part.text)
-    .join("\n")
-    .trim();
-}
-
 function replayPath(sessionId: string, directory: string): string {
   validateSessionId(sessionId);
   return join(directory, `${sessionId}.json`);
@@ -68,7 +54,7 @@ export function buildReplayTimeline(sessionId: string, messages: ReplayMessage[]
     const role = message.info?.role;
     if (role !== "user" && role !== "assistant" && role !== "system") return [];
 
-    const rawContent = getText(message.parts);
+    const rawContent = sanitizeTextForStorage(getText(message.parts));
     if (!rawContent || isFullyPrivate(rawContent)) return [];
 
     const content = stripPrivateContent(rawContent).trim();

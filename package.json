@@ -1,6 +1,6 @@
 {
   "name": "@happycastle/opencode-graphiti",
-  "version": "0.5.3",
+  "version": "0.6.0",
   "description": "OpenCode plugin that gives coding agents persistent memory using Graphiti temporal knowledge graph",
   "type": "module",
   "main": "dist/index.js",
@@ -14,7 +14,7 @@
   "scripts": {
     "build": "bun build ./src/index.ts --outdir ./dist --target node && bun build ./src/cli.ts --outfile ./dist/cli.js --target node && tsc --emitDeclarationOnly",
     "dev": "tsc --watch",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc -p test/tsconfig.typecheck.json",
     "test": "bun test"
   },
   "keywords": [
