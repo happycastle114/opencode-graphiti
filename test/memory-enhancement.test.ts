@@ -3,6 +3,7 @@ import { formatContextForPrompt, prioritizeMemories } from "../src/services/cont
 import {
   buildSessionDigest,
   extractExplicitProfileMemory,
+  extractSessionProfileMemories,
 } from "../src/services/memory-enhancement.js";
 
 describe("explicit profile memory extraction", () => {
@@ -22,6 +23,18 @@ describe("explicit profile memory extraction", () => {
       type: "style",
       content: "Please respond in Korean.",
     });
+  });
+
+  test("extracts unique explicit preferences from an entire session", () => {
+    expect(extractSessionProfileMemories([
+      "Please respond in Korean.",
+      "Let's inspect this deployment.",
+      "Please respond in Korean.",
+      "From now on, please keep my responses concise.",
+    ])).toEqual([
+      { type: "style", content: "Please respond in Korean." },
+      { type: "style", content: "From now on, please keep my responses concise." },
+    ]);
   });
 
   test("does not infer a profile from ordinary or fully private conversation", () => {

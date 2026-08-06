@@ -17,7 +17,7 @@ import {
   type MessageInfoLike,
   type MessageLike,
 } from "./services/message-parts.js";
-import { buildSessionDigest } from "./services/memory-enhancement.js";
+import { buildSessionDigest, extractSessionProfileMemories } from "./services/memory-enhancement.js";
 import {
   createSessionDigestRefresher,
   createSessionDigestSaver,
@@ -185,6 +185,20 @@ export const GraphitiPlugin: Plugin = async (ctx: PluginInput) => {
         const messages = rawMessages
           .map(asMessage)
           .filter((message): message is MessageLike => message !== null);
+        if (CONFIG.autoSavePreferences) {
+          const preferences = extractSessionProfileMemories(
+            messages
+              .filter((message) => message.info?.role === "user")
+              .map((message) => getText(message.parts)),
+          );
+          for (const [index, preference] of preferences.entries()) {
+            await graphitiClient.addMemory(preference.content, tags.user, {
+              type: preference.type,
+              name: `session-profile-${sessionID}-${index}`,
+              source: "message",
+            });
+          }
+        }
         return buildSessionDigest(buildReplayTimeline(sessionID, messages));
       });
       if (saved) log("auto-save: session digest saved", { sessionID });
