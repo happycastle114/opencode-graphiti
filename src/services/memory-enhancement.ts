@@ -75,6 +75,20 @@ export function extractExplicitProfileMemory(text: string): ProfileMemory | null
   };
 }
 
+/**
+ * Replays every user utterance in a session through the conservative profile
+ * parser. This catches an explicit preference stated before the current turn
+ * without deriving preferences from project or assistant content.
+ */
+export function extractSessionProfileMemories(userMessages: readonly string[]): readonly ProfileMemory[] {
+  const memories = new Map<string, ProfileMemory>();
+  for (const message of userMessages) {
+    const memory = extractExplicitProfileMemory(message);
+    if (memory) memories.set(memory.content, memory);
+  }
+  return [...memories.values()];
+}
+
 export function buildSessionDigest(timeline: ReplayTimeline): string | null {
   const events = timeline.events
     .filter((event) => event.role === "user" || event.role === "assistant")
