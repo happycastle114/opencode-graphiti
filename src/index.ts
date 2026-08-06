@@ -6,11 +6,24 @@ import { graphitiClient as mcpClient } from "./services/graphiti-client.js";
 import { graphitiRestClient as restClient } from "./services/graphiti-rest-client.js";
 import { formatContextForPrompt } from "./services/context.js";
 import { getTags } from "./services/tags.js";
-import { stripPrivateContent, isFullyPrivate } from "./services/privacy.js";
+import { stripPrivateContent, isFullyPrivate, redactForLog } from "./services/privacy.js";
 import { createCompactionHook, type CompactionContext } from "./services/compaction.js";
 import { buildReplayTimeline, loadReplayTimeline, saveReplayTimeline } from "./services/replay.js";
+import {
+  asMessage,
+  asMessageInfo,
+  getText,
+  isRecord,
+  type MessageInfoLike,
+  type MessageLike,
+} from "./services/message-parts.js";
 import { buildSessionDigest } from "./services/memory-enhancement.js";
-import { createSessionDigestRefresher, createSessionDigestSaver, saveExplicitProfileMemory } from "./services/memory-capture.js";
+import {
+  createSessionDigestRefresher,
+  createSessionDigestSaver,
+  saveFinishedTurnMemories,
+} from "./services/memory-capture.js";
+import { decideMemoryDuplicate } from "./services/memory-deduplication.js";
 
 import { isConfigured, CONFIG, USE_REST_API } from "./config.js";
 import { log } from "./services/logger.js";
@@ -43,73 +56,19 @@ function detectMemoryKeyword(text: string): boolean {
   return MEMORY_KEYWORD_PATTERN.test(textWithoutCode);
 }
 
-interface MessageInfoLike {
-  id?: string;
-  role?: string;
-  sessionID?: string;
-  finish?: string | boolean;
-  time?: { created?: number | string };
-}
-
-interface MessagePartLike {
-  type?: string;
-  text?: string;
-}
-
-interface MessageLike {
-  info?: MessageInfoLike;
-  parts?: MessagePartLike[];
-}
-
 const USER_STYLE_QUERY = "user communication response coding style preferences";
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
-}
-
-function asMessageInfo(value: unknown): MessageInfoLike | null {
-  if (!isRecord(value)) return null;
-  const finish = value.finish;
-  const time = isRecord(value.time) ? value.time : undefined;
-  const created = time?.created;
-  return {
-    id: typeof value.id === "string" ? value.id : undefined,
-    role: typeof value.role === "string" ? value.role : undefined,
-    sessionID: typeof value.sessionID === "string" ? value.sessionID : undefined,
-    finish: typeof finish === "string" || typeof finish === "boolean" ? finish : undefined,
-    time: typeof created === "number" || typeof created === "string" ? { created } : undefined,
-  };
-}
-
-function asMessage(value: unknown): MessageLike | null {
-  if (!isRecord(value)) return null;
-  const info = asMessageInfo(value.info);
-  const parts = Array.isArray(value.parts)
-    ? value.parts.flatMap((part): MessagePartLike[] => {
-        if (!isRecord(part)) return [];
-        return [{
-          type: typeof part.type === "string" ? part.type : undefined,
-          text: typeof part.text === "string" ? part.text : undefined,
-        }];
-      })
-    : [];
-  return { info: info ?? undefined, parts };
-}
-
-function extractText(message: MessageLike): string {
-  return (message.parts ?? [])
-    .filter((part) => part.type === "text" && typeof part.text === "string")
-    .map((part) => part.text)
-    .join("\n")
-    .trim();
-}
 
 export const GraphitiPlugin: Plugin = async (ctx: PluginInput) => {
   const { directory } = ctx;
   const tags = getTags(directory);
   const injectedSessions = new Set<string>();
   const savedTurns = new Set<string>();
-  const sessionDigestSaver = createSessionDigestSaver(graphitiClient, tags);
+  const memoryCaptureObserver = {
+    onDedupLookupFailure: (failure: { readonly groupId: string; readonly error?: string }) => {
+      log("auto-save: dedup lookup failed, proceeding", failure);
+    },
+  };
+  const sessionDigestSaver = createSessionDigestSaver(graphitiClient, tags, memoryCaptureObserver);
   const sessionDigestRefresher = createSessionDigestRefresher(sessionDigestSaver);
   log("Plugin init", { directory, tags, configured: isConfigured() });
 
@@ -154,7 +113,7 @@ export const GraphitiPlugin: Plugin = async (ctx: PluginInput) => {
         try {
           saveReplayTimeline(buildReplayTimeline(info.sessionID, messages));
         } catch (error) {
-          log("replay: failed to save timeline", { sessionID: info.sessionID, error: String(error) });
+          log("replay: failed to save timeline", { sessionID: info.sessionID, error: error instanceof Error ? error.message : String(error) });
         }
       }
       const assistantIndex = messages.findIndex((message) => message.info?.id === info.id);
@@ -167,60 +126,56 @@ export const GraphitiPlugin: Plugin = async (ctx: PluginInput) => {
         return;
       }
 
-      const assistantMessage = messages[assistantIndex]!;
+      const assistantMessage = messages[assistantIndex];
       const userMessage = messages
         .slice(0, assistantIndex)
         .reverse()
         .find((message) => message.info?.role === "user");
-      if (!userMessage) {
-        log("auto-save: skipped user message not found", { sessionID: info.sessionID, messageID: info.id });
+      if (!assistantMessage || !userMessage) {
+        log("auto-save: skipped conversation pair not found", { sessionID: info.sessionID, messageID: info.id });
         return;
       }
 
-      const userText = extractText(userMessage);
-      const assistantText = extractText(assistantMessage);
-      if (CONFIG.autoSavePreferences) {
-        try {
-          const savedProfileMemory = await saveExplicitProfileMemory(graphitiClient, tags, userText, info.id);
-          if (savedProfileMemory) {
-            log("auto-save: explicit profile memory saved", { sessionID: info.sessionID, messageID: info.id });
-          }
-        } catch (error) {
-          log("auto-save: failed to save explicit profile memory", { sessionID: info.sessionID, messageID: info.id, error: String(error) });
+      const result = await saveFinishedTurnMemories(graphitiClient, tags, {
+        turnId: info.id,
+        userText: getText(userMessage.parts),
+        assistantText: getText(assistantMessage.parts),
+        saveProfile: CONFIG.autoSavePreferences,
+        onDedupLookupFailure: memoryCaptureObserver.onDedupLookupFailure,
+      });
+      if (result.profileSaved) {
+        log("auto-save: explicit profile memory saved", { sessionID: info.sessionID, messageID: info.id });
+      }
+      switch (result.turn.kind) {
+        case "saved":
+          log("auto-save: turn saved", { sessionID: info.sessionID, messageID: info.id, contentLength: result.contentLength });
+          break;
+        case "duplicate":
+          log("auto-save: duplicate turn skipped", { sessionID: info.sessionID, messageID: info.id, existingId: result.turn.existingId });
+          break;
+        case "failed":
+          log("auto-save: failed to save turn", { sessionID: info.sessionID, messageID: info.id, error: result.turn.error });
+          break;
+        case "skipped":
+          log("auto-save: skipped short/private turn", { sessionID: info.sessionID, messageID: info.id });
+          break;
+        default: {
+          const exhaustive: never = result.turn;
+          void exhaustive;
         }
       }
-      const rawContent = [
-        "Conversation turn:",
-        `User: ${userText}`,
-        `Assistant: ${assistantText}`,
-      ].join("\n\n");
-      const content = stripPrivateContent(rawContent).trim();
-      if (isFullyPrivate(rawContent) || content.length < 80) {
-        log("auto-save: skipped short/private turn", { sessionID: info.sessionID, messageID: info.id });
-        return;
-      }
-
-      const result = await graphitiClient.addMemory(
-        content,
-        tags.project,
-        { type: "conversation", name: `turn-${info.id}`, source: "message" }
-      );
-      if (result.success) {
-        log("auto-save: turn saved", { sessionID: info.sessionID, messageID: info.id, contentLength: content.length });
-      } else {
-        log("auto-save: failed to save turn", { sessionID: info.sessionID, messageID: info.id, error: result.error });
-      }
     } catch (error) {
-      log("auto-save: ERROR", { sessionID: info.sessionID, messageID: info.id, error: String(error) });
+      log("auto-save: ERROR", { sessionID: info.sessionID, messageID: info.id, error: error instanceof Error ? error.message : String(error) });
     }
   }
 
   async function saveSessionDigest(sessionID: string): Promise<void> {
-    if (!CONFIG.autoSaveSessionDigests || !ctx.client) return;
+    const client = ctx.client;
+    if (!CONFIG.autoSaveSessionDigests || !client) return;
 
     try {
       const saved = await sessionDigestRefresher.refresh(sessionID, async () => {
-        const response = await ctx.client!.session.messages({
+        const response = await client.session.messages({
           path: { id: sessionID, sessionID },
           query: { directory },
         } as never);
@@ -234,7 +189,7 @@ export const GraphitiPlugin: Plugin = async (ctx: PluginInput) => {
       });
       if (saved) log("auto-save: session digest saved", { sessionID });
     } catch (error) {
-      log("auto-save: failed to save session digest", { sessionID, error: String(error) });
+      log("auto-save: failed to save session digest", { sessionID, error: error instanceof Error ? error.message : String(error) });
     }
   }
 
@@ -262,7 +217,7 @@ export const GraphitiPlugin: Plugin = async (ctx: PluginInput) => {
         }
 
         log("chat.message: processing", {
-          messagePreview: userMessage.slice(0, 100),
+          messagePreview: redactForLog(userMessage),
           partsCount: output.parts.length,
           textPartsCount: textParts.length,
         });
@@ -305,7 +260,13 @@ export const GraphitiPlugin: Plugin = async (ctx: PluginInput) => {
           const projectMemories = {
             results: [
               ...(projectMemoriesResult.success ? projectMemoriesResult.results : []),
-              ...sharedMemoriesResults.flatMap((result) => result.success ? result.results : []),
+              ...sharedMemoriesResults.flatMap((result, index) => {
+                if (!result.success) return [];
+                const sharedGroupId = sharedGroupIds[index];
+                return sharedGroupId
+                  ? result.results.map((mem) => ({ ...mem, groupId: mem.groupId ?? sharedGroupId }))
+                  : result.results;
+              }),
             ],
           };
 
@@ -337,7 +298,7 @@ export const GraphitiPlugin: Plugin = async (ctx: PluginInput) => {
         }
 
       } catch (error) {
-        log("chat.message: ERROR", { error: String(error) });
+        log("chat.message: ERROR", { error: error instanceof Error ? error.message : String(error) });
       }
     },
 
@@ -529,40 +490,31 @@ export const GraphitiPlugin: Plugin = async (ctx: PluginInput) => {
                 const groupId =
                   scope === "user" ? tags.user : tags.project;
 
-                // Deduplication: check if very similar content already exists
                 try {
                   const existingResult = await graphitiClient.searchMemories(
                     sanitizedContent,
                     groupId,
                   );
-                  if (existingResult.success && existingResult.results?.length) {
-                    const duplicate = existingResult.results.find((r) => {
-                      // For scored results, use similarity threshold
-                      if (r.similarity != null && r.similarity > 0.9) return true;
-                      // For unscored results, check content similarity via string matching
-                      // Only apply for content with reasonable length (>50 chars) to avoid false matches
-                      if (r.similarity == null && r.memory) {
-                        const existingNorm = r.memory.toLowerCase().trim();
-                        const newNorm = sanitizedContent.toLowerCase().trim();
-                        if (newNorm.length < 50) return existingNorm === newNorm;
-                        return existingNorm === newNorm || existingNorm.includes(newNorm) || newNorm.includes(existingNorm);
-                      }
-                      return false;
+                  if (existingResult.success) {
+                    const decision = decideMemoryDuplicate({
+                      content: sanitizedContent,
+                      candidates: existingResult.results ?? [],
                     });
-                    if (duplicate) {
-                      log("add: duplicate detected, skipping", { existingId: duplicate.id });
+                    if (decision.kind === "duplicate") {
+                      log("add: duplicate detected, skipping", { existingId: decision.existingId });
                       return JSON.stringify({
                         success: true,
-                        message: `Similar memory already exists (id: ${duplicate.id}), skipping duplicate`,
+                        message: `Similar memory already exists (id: ${decision.existingId}), skipping duplicate`,
                         duplicate: true,
-                        existingId: duplicate.id,
+                        existingId: decision.existingId,
                         scope,
                       });
                     }
+                  } else {
+                    log("add: deduplication check failed, proceeding", { error: existingResult.error });
                   }
-                } catch {
-                  // Deduplication check failed, proceed with add anyway
-                  log("add: deduplication check failed, proceeding");
+                } catch (error) {
+                  log("add: deduplication check failed, proceeding", { error: error instanceof Error ? error.message : String(error) });
                 }
 
                 const result = await graphitiClient.addMemory(

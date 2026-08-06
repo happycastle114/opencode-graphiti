@@ -3,6 +3,12 @@ import { join } from "node:path";
 import { homedir } from "node:os";
 import { graphitiClient } from "./graphiti-client.js";
 import { log } from "./logger.js";
+import {
+  persistDistinctMemory,
+  type MemoryStore,
+  type MemoryWriteOutcome,
+} from "./memory-storage.js";
+import { isStorageWorthy, sanitizeTextForStorage } from "./storage-sanitizer.js";
 import { CONFIG } from "../config.js";
 
 const MESSAGE_STORAGE = join(homedir(), ".opencode", "messages");
@@ -79,6 +85,28 @@ interface SummarizeContext {
 export interface CompactionOptions {
   threshold?: number;
   getModelLimit?: (providerID: string, modelID: string) => number | undefined;
+}
+
+export type CompactionSummaryOutcome =
+  | MemoryWriteOutcome
+  | { readonly kind: "skipped"; readonly reason: "short-or-not-storage-worthy" };
+
+export async function saveCompactionSummary(
+  store: MemoryStore,
+  projectGroup: string,
+  sessionId: string,
+  summaryContent: string,
+): Promise<CompactionSummaryOutcome> {
+  const content = sanitizeTextForStorage(`[Session Summary]\n${summaryContent}`);
+  if (content.length < 100 || !isStorageWorthy(content)) {
+    return { kind: "skipped", reason: "short-or-not-storage-worthy" };
+  }
+
+  return persistDistinctMemory(store, {
+    content,
+    groupId: projectGroup,
+    metadata: { type: "conversation", name: `session-summary-${sessionId}` },
+  });
 }
 
 function createCompactionPrompt(projectMemories: string[]): string {
@@ -354,22 +382,30 @@ export function createCompactionHook(
   }
 
   async function saveSummaryAsMemory(sessionID: string, summaryContent: string): Promise<void> {
-    if (!summaryContent || summaryContent.length < 100) {
-      log("[compaction] summary too short to save", { sessionID, length: summaryContent.length });
-      return;
-    }
-
     try {
-      const result = await graphitiClient.addMemory(
-        `[Session Summary]\n${summaryContent}`,
+      const outcome = await saveCompactionSummary(
+        graphitiClient,
         tags.project,
-        { type: "conversation", name: `session-summary-${sessionID}` }
+        sessionID,
+        summaryContent,
       );
-
-      if (result.success) {
-        log("[compaction] summary saved as memory", { sessionID });
-      } else {
-        log("[compaction] failed to save summary", { error: result.error });
+      switch (outcome.kind) {
+        case "saved":
+          log("[compaction] summary saved as memory", { sessionID });
+          return;
+        case "duplicate":
+          log("[compaction] duplicate summary skipped", { sessionID, existingId: outcome.existingId });
+          return;
+        case "failed":
+          log("[compaction] failed to save summary", { sessionID, error: outcome.error });
+          return;
+        case "skipped":
+          log("[compaction] summary too short or not storage-worthy", { sessionID });
+          return;
+        default: {
+          const exhaustive: never = outcome;
+          void exhaustive;
+        }
       }
     } catch (err) {
       log("[compaction] failed to save summary", { error: String(err) });
