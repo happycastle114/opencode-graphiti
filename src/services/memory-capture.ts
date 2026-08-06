@@ -1,22 +1,41 @@
-import type { EpisodeSource, MemoryType } from "../types/index.js";
 import { extractExplicitProfileMemory } from "./memory-enhancement.js";
+import {
+  persistDistinctMemory,
+  type MemoryCaptureObserver,
+  type MemoryStore,
+  type MemoryWriter,
+  type MemoryWriteOutcome,
+} from "./memory-storage.js";
+import { isFullyPrivate, stripPrivateContent } from "./privacy.js";
+import { isStorageWorthy, sanitizeTextForStorage } from "./storage-sanitizer.js";
 
-export interface MemoryWriter {
-  addMemory(
-    content: string,
-    groupId: string,
-    metadata?: {
-      type?: MemoryType;
-      name?: string;
-      source?: EpisodeSource;
-      [key: string]: unknown;
-    },
-  ): Promise<{ success: boolean }>;
-}
+export type { MemoryStore, MemoryWriter } from "./memory-storage.js";
+
+export type TurnWriteOutcome =
+  | MemoryWriteOutcome
+  | { readonly kind: "skipped"; readonly reason: "short-or-private" };
+
+export type FinishedTurnInput = MemoryCaptureObserver & {
+  readonly turnId: string;
+  readonly userText: string;
+  readonly assistantText: string;
+  readonly saveProfile: boolean;
+};
+
+export type FinishedTurnResult = {
+  readonly profileSaved: boolean;
+  readonly turn: TurnWriteOutcome;
+  readonly contentLength: number;
+};
+
+export type SessionDigestInput = MemoryCaptureObserver & {
+  readonly sessionId: string;
+  readonly digest: string | null;
+};
 
 export interface MemoryGroups {
-  user: string;
-  project: string;
+  readonly user: string;
+  readonly project: string;
 }
 
 export interface SessionDigestSaver {
@@ -41,23 +60,92 @@ export async function saveExplicitProfileMemory(
   return result.success;
 }
 
-export async function saveSessionDigestMemory(
-  writer: MemoryWriter,
+export async function saveFinishedTurnMemories(
+  store: MemoryStore,
   groups: MemoryGroups,
-  sessionId: string,
-  digest: string | null,
-): Promise<boolean> {
-  if (!digest) return false;
+  input: FinishedTurnInput,
+): Promise<FinishedTurnResult> {
+  const userText = sanitizeTextForStorage(input.userText);
+  const assistantText = sanitizeTextForStorage(input.assistantText);
+  const profileMemory = input.saveProfile
+    ? extractExplicitProfileMemory(userText)
+    : null;
+  const profileOutcome = profileMemory
+    ? await persistDistinctMemory(store, {
+        content: profileMemory.content,
+        groupId: groups.user,
+        metadata: {
+          type: profileMemory.type,
+          name: `profile-${input.turnId}`,
+          source: "message",
+        },
+        onDedupLookupFailure: input.onDedupLookupFailure,
+      })
+    : null;
 
-  const result = await writer.addMemory(digest, groups.project, {
-    type: "conversation",
-    name: `session-digest-${sessionId}`,
-    source: "message",
+  const rawContent = [
+    "Conversation turn:",
+    `User: ${userText}`,
+    `Assistant: ${assistantText}`,
+  ].join("\n\n");
+  const content = stripPrivateContent(rawContent).trim();
+  if (
+    (!isStorageWorthy(userText) && !isStorageWorthy(assistantText))
+    || isFullyPrivate(rawContent)
+    || content.length < 80
+  ) {
+    return {
+      profileSaved: profileOutcome?.kind === "saved",
+      turn: { kind: "skipped", reason: "short-or-private" },
+      contentLength: content.length,
+    };
+  }
+
+  const turn = await persistDistinctMemory(store, {
+    content,
+    groupId: groups.project,
+    metadata: {
+      type: "conversation",
+      name: `turn-${input.turnId}`,
+      source: "message",
+    },
+    onDedupLookupFailure: input.onDedupLookupFailure,
   });
-  return result.success;
+  return {
+    profileSaved: profileOutcome?.kind === "saved",
+    turn,
+    contentLength: content.length,
+  };
 }
 
-export function createSessionDigestSaver(writer: MemoryWriter, groups: MemoryGroups): SessionDigestSaver {
+export async function saveSessionDigestMemory(
+  store: MemoryStore,
+  groups: MemoryGroups,
+  input: SessionDigestInput,
+): Promise<boolean> {
+  if (!input.digest) return false;
+
+  const content = sanitizeTextForStorage(input.digest);
+  if (!isStorageWorthy(content)) return false;
+
+  const outcome = await persistDistinctMemory(store, {
+    content,
+    groupId: groups.project,
+    metadata: {
+      type: "conversation",
+      name: `session-digest-${input.sessionId}`,
+      source: "message",
+    },
+    onDedupLookupFailure: input.onDedupLookupFailure,
+  });
+  return outcome.kind === "saved";
+}
+
+export function createSessionDigestSaver(
+  store: MemoryStore,
+  groups: MemoryGroups,
+  observer: MemoryCaptureObserver = {},
+): SessionDigestSaver {
   const savedDigests = new Map<string, string>();
   const writeChains = new Map<string, Promise<boolean>>();
 
@@ -67,7 +155,11 @@ export function createSessionDigestSaver(writer: MemoryWriter, groups: MemoryGro
 
       const writeDigest = async (): Promise<boolean> => {
         if (savedDigests.get(sessionId) === digest) return false;
-        const saved = await saveSessionDigestMemory(writer, groups, sessionId, digest);
+        const saved = await saveSessionDigestMemory(store, groups, {
+          sessionId,
+          digest,
+          onDedupLookupFailure: observer.onDedupLookupFailure,
+        });
         if (saved) savedDigests.set(sessionId, digest);
         return saved;
       };

@@ -11,6 +11,16 @@ function createWriter() {
   return {
     calls,
     writer: {
+      searchMemories: async (_query: string, groupId: string) => ({
+        success: true as const,
+        results: calls
+          .filter((call) => call.groupId === groupId)
+          .map((call, index) => ({
+            id: `memory-${index}`,
+            memory: call.content,
+            similarity: null,
+          })),
+      }),
       addMemory: async (content: string, groupId: string, metadata?: Record<string, unknown>) => {
         calls.push({ content, groupId, metadata });
         return { success: true as const, message: "saved" };
@@ -46,11 +56,14 @@ describe("automatic memory capture", () => {
   test("writes a session digest once to the project group", async () => {
     const { calls, writer } = createWriter();
 
-    const saved = await saveSessionDigestMemory(writer, { user: "user-group", project: "project-group" }, "session-42", "[Session Digest]\nUser: Use Bun for releases.");
+    const saved = await saveSessionDigestMemory(writer, { user: "user-group", project: "project-group" }, {
+      sessionId: "session-42",
+      digest: "[Session Digest]\nUser: Use Bun for releases.",
+    });
 
     expect(saved).toBe(true);
     expect(calls).toEqual([{
-      content: "[Session Digest]\nUser: Use Bun for releases.",
+      content: "User: Use Bun for releases.",
       groupId: "project-group",
       metadata: { type: "conversation", name: "session-digest-session-42", source: "message" },
     }]);
@@ -73,22 +86,31 @@ describe("automatic memory capture", () => {
   test("serializes changed digest snapshots so stale completion cannot re-enable a duplicate", async () => {
     const calls: string[] = [];
     const resolvers: Array<(result: { success: true }) => void> = [];
+    let notifyWriteStarted: (() => void) | undefined;
+    const waitForWriteStart = () => new Promise<void>((resolve) => {
+      notifyWriteStarted = resolve;
+    });
     const writer = {
+      searchMemories: async () => ({ success: true as const, results: [] }),
       addMemory: async (content: string) => {
         calls.push(content);
+        notifyWriteStarted?.();
+        notifyWriteStarted = undefined;
         return await new Promise<{ success: true }>((resolve) => resolvers.push(resolve));
       },
     };
     const saver = createSessionDigestSaver(writer, { user: "user-group", project: "project-group" });
+    const firstWriteStarted = waitForWriteStart();
     const first = saver.save("session-42", "[Session Digest]\nVersion one");
     const second = saver.save("session-42", "[Session Digest]\nVersion two");
 
-    await Promise.resolve();
-    expect(calls).toEqual(["[Session Digest]\nVersion one"]);
+    await firstWriteStarted;
+    expect(calls).toEqual(["Version one"]);
+    const secondWriteStarted = waitForWriteStart();
     resolvers.shift()?.({ success: true });
     await first;
-    await Promise.resolve();
-    expect(calls).toEqual(["[Session Digest]\nVersion one", "[Session Digest]\nVersion two"]);
+    await secondWriteStarted;
+    expect(calls).toEqual(["Version one", "Version two"]);
     resolvers.shift()?.({ success: true });
     expect(await second).toBe(true);
     expect(await saver.save("session-42", "[Session Digest]\nVersion two")).toBe(false);
@@ -108,6 +130,6 @@ describe("automatic memory capture", () => {
     resolvers[0]?.("[Session Digest]\nStale snapshot");
     expect(await first).toBe(false);
 
-    expect(calls.map((call) => call.content)).toEqual(["[Session Digest]\nNewest snapshot"]);
+    expect(calls.map((call) => call.content)).toEqual(["Newest snapshot"]);
   });
 });
