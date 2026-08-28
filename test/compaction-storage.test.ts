@@ -6,13 +6,12 @@ describe("compaction summary storage", () => {
     // Given
     const writes: string[] = [];
     const store = {
-      async searchMemories() {
+      async listMemories() {
         return {
           success: true as const,
-          results: writes.map((memory, index) => ({
+          memories: writes.map((memory, index) => ({
             id: `memory-${index}`,
-            memory,
-            similarity: null,
+            summary: memory,
           })),
         };
       },
