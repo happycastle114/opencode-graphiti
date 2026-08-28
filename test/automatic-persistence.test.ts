@@ -22,7 +22,7 @@ type StoredMemory = {
 
 type StoreOptions = {
   readonly initialMemories?: readonly StoredMemory[];
-  readonly searchError?: string;
+  readonly listError?: string;
 };
 
 const GROUPS: MemoryGroups = {
@@ -37,18 +37,17 @@ function createMemoryStore(options: StoreOptions = {}) {
   return {
     stored,
     store: {
-      async searchMemories(_query: string, groupId: string) {
-        if (options.searchError) {
-          return { success: false as const, error: options.searchError };
+      async listMemories(groupId: string) {
+        if (options.listError) {
+          return { success: false as const, error: options.listError };
         }
         return {
           success: true as const,
-          results: [...candidates, ...stored]
+          memories: [...candidates, ...stored]
             .filter((memory) => memory.groupId === groupId)
             .map((memory, index) => ({
               id: `memory-${index}`,
-              memory: memory.content,
-              similarity: null,
+              summary: memory.content,
             })),
         };
       },
@@ -297,7 +296,7 @@ describe("automatic memory persistence", () => {
 
   test("continues a legitimate automatic write when duplicate lookup fails", async () => {
     // Given
-    const { store, stored } = createMemoryStore({ searchError: "search unavailable" });
+    const { store, stored } = createMemoryStore({ listError: "episode list unavailable" });
     const failures: string[] = [];
 
     // When
@@ -312,6 +311,6 @@ describe("automatic memory persistence", () => {
     // Then
     expect(result.turn.kind).toBe("saved");
     expect(stored).toHaveLength(1);
-    expect(failures).toEqual(["search unavailable"]);
+    expect(failures).toEqual(["episode list unavailable"]);
   });
 });
