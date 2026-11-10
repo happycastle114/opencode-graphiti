@@ -100,8 +100,14 @@ Create `~/.config/opencode/graphiti.jsonc`:
   // Graphiti MCP Server URL (기본값)
   "mcpUrl": "http://localhost:8000/mcp/",
   
-  // Group ID prefix
+  // Group ID prefix (hashed scheme only)
   "groupIdPrefix": "opencode",
+
+  // "scoped": user memories go to group "user", project memories to
+  // "project-<owner-repo>" from the git remote (project-local-<dir> without one),
+  // the same ids the other memory clients use. MEMORY_PROJECT=owner/repo overrides.
+  // "hashed" (default): <prefix>_user_<sha> / <prefix>_project_<sha(dir)>.
+  "groupScheme": "scoped",
   
   // Search limits
   "maxMemories": 5,

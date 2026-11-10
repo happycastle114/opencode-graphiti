@@ -1,0 +1,10 @@
+[
+ ["git@github.com:Happycastle114/k3s-happycastle.git", "project-happycastle114-k3s-happycastle"],
+ ["https://github.com/happycastle114/k3s-happycastle", "project-happycastle114-k3s-happycastle"],
+ ["https://user:pw@github.com/happycastle114/k3s-happycastle.git/", "project-happycastle114-k3s-happycastle"],
+ ["ssh://git@github.com:22/happycastle114/k3s-happycastle.git", "project-happycastle114-k3s-happycastle"],
+ ["happycastle114/k3s-happycastle", "project-happycastle114-k3s-happycastle"],
+ ["https://github.com/sparcs-kaist/otlplus-app", "project-sparcs-kaist-otlplus-app"],
+ ["https://gitlab.com/a/B.c", "project-gitlab-com-a-b-c"],
+ ["git@bitbucket.org:Team/My_Repo.git", "project-bitbucket-org-team-my-repo"]
+]

@@ -6,6 +6,7 @@
  */
 
 import { CONFIG, GRAPHITI_REST_URL } from "../config.js";
+import { sourceDescription } from "./tags.js";
 import { assertNonEmptyGroupIds } from "./group-ids.js";
 import { log } from "./logger.js";
 import { redactForLog } from "./privacy.js";
@@ -157,7 +158,7 @@ export class GraphitiRestClient {
         role: metadata?.type || "memory",
         timestamp: new Date().toISOString(),
         name: metadata?.name,
-        source_description: metadata?.type || "opencode-memory",
+        source_description: sourceDescription(metadata?.type),
       };
 
       if (metadata?.uuid) {
