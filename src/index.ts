@@ -5,7 +5,7 @@ import { tool } from "@opencode-ai/plugin";
 import { graphitiClient as mcpClient } from "./services/graphiti-client.js";
 import { graphitiRestClient as restClient } from "./services/graphiti-rest-client.js";
 import { formatContextForPrompt } from "./services/context.js";
-import { getTags } from "./services/tags.js";
+import { getTags, linkedGroupsFor } from "./services/tags.js";
 import { stripPrivateContent, isFullyPrivate, redactForLog } from "./services/privacy.js";
 import { createCompactionHook, type CompactionContext } from "./services/compaction.js";
 import { buildReplayTimeline, loadReplayTimeline, saveReplayTimeline } from "./services/replay.js";
@@ -259,7 +259,12 @@ export const GraphitiPlugin: Plugin = async (ctx: PluginInput) => {
             { content: userMessage, role: "user" },
           ];
 
-          const sharedGroupIds = CONFIG.sharedGroupIds.filter((groupId) => groupId.trim().length > 0);
+          const sharedGroupIds = [
+            ...new Set([
+              ...CONFIG.sharedGroupIds.filter((groupId) => groupId.trim().length > 0),
+              ...linkedGroupsFor(tags.project),
+            ]),
+          ];
           const [profileResult, userMemoriesResult, projectMemoriesResult, ...sharedMemoriesResults] = await Promise.all([
             graphitiClient.getProfile(tags.user, USER_STYLE_QUERY),
             graphitiClient.searchMemories(userMessage, tags.user, { messages: conversationMessages }),
@@ -600,9 +605,14 @@ export const GraphitiPlugin: Plugin = async (ctx: PluginInput) => {
                   return formatSearchResults(args.query, scope, result, args.limit);
                 }
 
-                const [userResult, projectResult] = await Promise.all([
+                const query = args.query;
+                const linkedGroups = linkedGroupsFor(tags.project);
+                const [userResult, projectResult, ...linkedResults] = await Promise.all([
                   graphitiClient.searchMemories(args.query, tags.user, searchOptions),
                   graphitiClient.searchMemories(args.query, tags.project, searchOptions),
+                  ...linkedGroups.map((groupId) =>
+                    graphitiClient.searchMemories(query, groupId, searchOptions)
+                  ),
                 ]);
 
                 if (!userResult.success || !projectResult.success) {
@@ -621,6 +631,11 @@ export const GraphitiPlugin: Plugin = async (ctx: PluginInput) => {
                     ...r,
                     scope: "project" as const,
                   })),
+                  ...linkedResults.flatMap((result) =>
+                    result.success
+                      ? (result.results || []).map((r) => ({ ...r, scope: "project" as const }))
+                      : []
+                  ),
                 ].sort((a, b) => (b.similarity ?? 0) - (a.similarity ?? 0));
 
                 return JSON.stringify({

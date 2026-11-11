@@ -108,6 +108,13 @@ Create `~/.config/opencode/graphiti.jsonc`:
   // the same ids the other memory clients use. MEMORY_PROJECT=owner/repo overrides.
   // "hashed" (default): <prefix>_user_<sha> / <prefix>_project_<sha(dir)>.
   "groupScheme": "scoped",
+
+  // Topic groups searched with a project group (writes are never redirected).
+  // Default: the lesson repos also search the shared "teaching" group.
+  "linkedGroupIds": {
+    "project-happycastle114-python-lesson": ["teaching"],
+    "project-happycastle114-classroom": ["teaching"]
+  },
   
   // Search limits
   "maxMemories": 5,
