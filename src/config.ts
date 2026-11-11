@@ -37,6 +37,12 @@ interface GraphitiConfig {
   enableReplay?: boolean;
   enableCompaction?: boolean;
   sharedGroupIds?: string[];
+  /**
+   * Topic groups searched together with a project group (scoped scheme), e.g.
+   * the lesson repos also search "teaching". Same table as memory_hub/scope.py
+   * and memctl. Writes are never redirected.
+   */
+  linkedGroupIds?: Record<string, string[]>;
   entityTypes?: string[];
 }
 
@@ -58,6 +64,10 @@ const DEFAULTS: Required<Omit<GraphitiConfig, "userGroupId" | "groupScheme">> = 
   enableReplay: true,
   enableCompaction: false,
   sharedGroupIds: [],
+  linkedGroupIds: {
+    "project-happycastle114-python-lesson": ["teaching"],
+    "project-happycastle114-classroom": ["teaching"],
+  },
   entityTypes: ["Preference", "Requirement", "Procedure", "Location", "Event", "Organization", "Document", "Topic", "Object", "Error", "Lesson", "Pattern"],
 };
 
@@ -179,6 +189,7 @@ function createHotReloadConfig() {
     get enableReplay() { return getReloadableValue("enableReplay") ?? DEFAULTS.enableReplay; },
     get enableCompaction() { return getReloadableValue("enableCompaction") ?? DEFAULTS.enableCompaction; },
     get sharedGroupIds() { return getReloadableValue("sharedGroupIds") ?? DEFAULTS.sharedGroupIds; },
+    get linkedGroupIds() { return getReloadableValue("linkedGroupIds") ?? DEFAULTS.linkedGroupIds; },
     get entityTypes() { return getReloadableValue("entityTypes") ?? DEFAULTS.entityTypes; },
   };
 }

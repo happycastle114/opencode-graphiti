@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { execFileSync, execSync } from "node:child_process";
 import { basename } from "node:path";
-import { GROUP_ID_PREFIX, GROUP_SCHEME, USER_GROUP_ID } from "../config.js";
+import { CONFIG, GROUP_ID_PREFIX, GROUP_SCHEME, USER_GROUP_ID } from "../config.js";
 
 function sha256(input: string): string {
   return createHash("sha256").update(input).digest("hex").slice(0, 16);
@@ -93,6 +93,15 @@ export function getTags(directory: string): { user: string; project: string } {
     user: getUserTag(),
     project: getProjectTag(directory),
   };
+}
+
+/** Extra topic groups searched with this project group (e.g. lesson repos -> "teaching"). */
+export function linkedGroupsFor(
+  projectGroup: string,
+  table: Record<string, string[]> = CONFIG.linkedGroupIds
+): string[] {
+  const extra = table[projectGroup] ?? [];
+  return [...new Set(extra.map((g) => g.trim()).filter((g) => g.length > 0 && g !== projectGroup))];
 }
 
 /** Source tool goes in episode metadata, never in the group id. */
