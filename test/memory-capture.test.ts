@@ -11,14 +11,13 @@ function createWriter() {
   return {
     calls,
     writer: {
-      searchMemories: async (_query: string, groupId: string) => ({
+      listMemories: async (groupId: string) => ({
         success: true as const,
-        results: calls
+        memories: calls
           .filter((call) => call.groupId === groupId)
           .map((call, index) => ({
             id: `memory-${index}`,
-            memory: call.content,
-            similarity: null,
+            summary: call.content,
           })),
       }),
       addMemory: async (content: string, groupId: string, metadata?: Record<string, unknown>) => {
@@ -91,7 +90,7 @@ describe("automatic memory capture", () => {
       notifyWriteStarted = resolve;
     });
     const writer = {
-      searchMemories: async () => ({ success: true as const, results: [] }),
+      listMemories: async () => ({ success: true as const, memories: [] }),
       addMemory: async (content: string) => {
         calls.push(content);
         notifyWriteStarted?.();

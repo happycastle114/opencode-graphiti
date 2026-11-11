@@ -18,6 +18,12 @@ interface GraphitiConfig {
   useRestApi?: boolean;
   userGroupId?: string;
   groupIdPrefix?: string;
+  /**
+   * "hashed" (default): `${prefix}_user_<sha(email)>` / `${prefix}_project_<sha(dir)>`.
+   * "scoped": user group `user` (or userGroupId) and project group
+   * `project-<owner-repo>` from the git remote, the same id every client uses.
+   */
+  groupScheme?: "hashed" | "scoped";
   similarityThreshold?: number;
   maxMemories?: number;
   maxProjectMemories?: number;
@@ -34,7 +40,7 @@ interface GraphitiConfig {
   entityTypes?: string[];
 }
 
-const DEFAULTS: Required<Omit<GraphitiConfig, "userGroupId">> = {
+const DEFAULTS: Required<Omit<GraphitiConfig, "userGroupId" | "groupScheme">> = {
   mcpUrl: "http://localhost:8000/mcp/",
   restUrl: "http://localhost:8000",
   useRestApi: true,
@@ -124,6 +130,12 @@ export const USE_REST_API =
   fileConfig.useRestApi ?? 
   (process.env.GRAPHITI_USE_REST_API === "true" || process.env.GRAPHITI_USE_REST_API === undefined) ??
   DEFAULTS.useRestApi;
+
+export const GROUP_SCHEME: "hashed" | "scoped" =
+  (fileConfig.groupScheme ?? process.env.GRAPHITI_GROUP_SCHEME) === "scoped" ? "scoped" : "hashed";
+
+export const USER_GROUP_ID: string | undefined =
+  fileConfig.userGroupId ?? process.env.GRAPHITI_USER_GROUP_ID ?? undefined;
 
 export const GROUP_ID_PREFIX = 
   fileConfig.groupIdPrefix ?? 

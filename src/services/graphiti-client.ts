@@ -1,4 +1,5 @@
 import { CONFIG, GRAPHITI_MCP_URL } from "../config.js";
+import { sourceDescription } from "./tags.js";
 import { assertNonEmptyGroupIds } from "./group-ids.js";
 import { log } from "./logger.js";
 import { redactForLog } from "./privacy.js";
@@ -222,7 +223,7 @@ export class GraphitiClient {
         episode_body: content,
         group_id: groupId,
         source,
-        source_description: metadata?.type || "opencode-memory",
+        source_description: sourceDescription(metadata?.type),
       };
       
       if (metadata?.uuid) {

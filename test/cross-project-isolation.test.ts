@@ -28,6 +28,17 @@ function createIsolationMemoryStore(options: { readonly initialMemories?: readon
   return {
     stored,
     store: {
+      async listMemories(groupId: string) {
+        return {
+          success: true as const,
+          memories: stored
+            .filter((memory) => memory.groupId === groupId)
+            .map((memory, index) => ({
+              id: `memory-${index}`,
+              summary: memory.content,
+            })),
+        };
+      },
       async searchMemories(_query: string, groupId: string) {
         return {
           success: true as const,

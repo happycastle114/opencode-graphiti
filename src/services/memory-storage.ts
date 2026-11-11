@@ -12,11 +12,16 @@ export type MemoryMetadata = {
   readonly [key: string]: unknown;
 };
 
-type MemorySearchResult = {
+type MemoryListResult = {
   readonly success: boolean;
-  readonly results?: readonly DuplicateCandidate[];
+  readonly memories?: readonly {
+    readonly id: string;
+    readonly summary: string;
+  }[];
   readonly error?: string;
 };
+
+const DEDUP_LOOKUP_LIMIT = 100;
 
 export type DedupLookupFailure = {
   readonly groupId: string;
@@ -51,7 +56,7 @@ export interface MemoryWriter {
 }
 
 export interface MemoryStore extends MemoryWriter {
-  searchMemories(query: string, groupId: string): Promise<MemorySearchResult>;
+  listMemories(groupId: string, limit?: number): Promise<MemoryListResult>;
 }
 
 export async function persistDistinctMemory(
@@ -59,11 +64,18 @@ export async function persistDistinctMemory(
   input: DistinctMemoryInput,
 ): Promise<MemoryWriteOutcome> {
   try {
-    const lookup = await store.searchMemories(input.content, input.groupId);
+    const lookup = await store.listMemories(
+      input.groupId,
+      DEDUP_LOOKUP_LIMIT,
+    );
     if (lookup.success) {
       const decision = decideMemoryDuplicate({
         content: input.content,
-        candidates: lookup.results ?? [],
+        candidates: (lookup.memories ?? []).map((memory) => ({
+          id: memory.id,
+          memory: memory.summary,
+          similarity: null,
+        })),
       });
       if (decision.kind === "duplicate") return decision;
     } else {
